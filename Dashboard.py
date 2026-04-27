@@ -25,6 +25,7 @@ from datetime import datetime
 import gspread
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 import streamlit as st
 
 # ---------------------------------------------------------
@@ -290,6 +291,22 @@ def get_perf_pct(col_name):
         return None
     return parse_pct_value(perf_row[col_name])
 
+def get_perf_raw(col_name):
+    """현재 perf_row 에서 raw 숫자 추출 (₩ 통화 컬럼 / 손익 컬럼용)."""
+    if perf_row is None or col_name not in perf_row.index:
+        return None
+    raw = perf_row[col_name]
+    s = str(raw).strip()
+    if s == '' or s == '-':
+        return None
+    cleaned = re.sub(r'[^\d.\-]', '', s)
+    if cleaned in ('', '-', '.'):
+        return None
+    try:
+        return float(cleaned)
+    except:
+        return None
+
 def get_bm_pct(bm_label, col_name):
     """벤치마크 행에서 셀을 퍼센트 단위로 가져옴."""
     if df_perf.empty or '구분' not in df_perf.columns:
@@ -448,7 +465,137 @@ if view in ("멘토 포폴", "HS 포폴"):
             hide_index=True,
         )
 
+# ---------------------------------------------------------
+# [블록 1.7] 연간 KPI 진행
+# 호섭님 KPI: 최소 10% / 평균 15% / 최대 20%
+# YTD TWR 로 평가 (자금 흐름 효과 자동 제거)
+# ---------------------------------------------------------
 st.divider()
+
+# 현재 연도 자동 추출
+month_cols_kpi = sorted([c for c in df_perf.columns if re.match(r'^\d{4}-\d{2}$', str(c))])
+if month_cols_kpi:
+    _kpi_year = month_cols_kpi[-1].split('-')[0]
+else:
+    _kpi_year = str(datetime.now().year)
+
+st.subheader(f"🎯 {_kpi_year} 연간 KPI 진행")
+
+KPI_MIN_PCT = 10.0
+KPI_AVG_PCT = 15.0
+KPI_MAX_PCT = 20.0
+
+ytd_twr = get_perf_pct('YTD')
+
+if ytd_twr is None:
+    st.info("YTD 수익률 데이터 없음")
+else:
+    # 4 메트릭 카드
+    k1, k2, k3, k4 = st.columns(4)
+    with k1:
+        st.metric("현재 YTD (TWR)", f"{ytd_twr:+.2f}%")
+    with k2:
+        diff = ytd_twr - KPI_MIN_PCT
+        st.metric("최소 목표 10%", f"{diff:+.2f}p",
+                  delta="달성 ✓" if diff >= 0 else "미달성",
+                  delta_color="off")
+    with k3:
+        diff = ytd_twr - KPI_AVG_PCT
+        st.metric("평균 목표 15%", f"{diff:+.2f}p",
+                  delta="달성 ✓" if diff >= 0 else "미달성",
+                  delta_color="off")
+    with k4:
+        diff = ytd_twr - KPI_MAX_PCT
+        st.metric("최대 목표 20%", f"{diff:+.2f}p",
+                  delta="달성 ✓" if diff >= 0 else "미달성",
+                  delta_color="off")
+
+    # 진행 상태 메시지
+    if ytd_twr >= KPI_MAX_PCT:
+        status_msg = f"🏆 **최대 목표 ({KPI_MAX_PCT:.0f}%) 초과 달성!** +{ytd_twr-KPI_MAX_PCT:.2f}%p 더 위"
+    elif ytd_twr >= KPI_AVG_PCT:
+        status_msg = f"✅ **평균 목표 ({KPI_AVG_PCT:.0f}%) 달성!** 최대까지 {KPI_MAX_PCT-ytd_twr:.2f}%p 남음"
+    elif ytd_twr >= KPI_MIN_PCT:
+        status_msg = f"✅ **최소 목표 ({KPI_MIN_PCT:.0f}%) 달성!** 평균까지 {KPI_AVG_PCT-ytd_twr:.2f}%p 남음"
+    elif ytd_twr >= 0:
+        status_msg = f"⏳ **진행 중** — 최소 ({KPI_MIN_PCT:.0f}%)까지 {KPI_MIN_PCT-ytd_twr:.2f}%p 더 필요"
+    else:
+        status_msg = f"⚠️ **마이너스 영역** — 회복 후 최소까지 {KPI_MIN_PCT-ytd_twr:.2f}%p 필요"
+    st.markdown(status_msg)
+
+    # 가로 막대 차트 — 현재 YTD + 목표 라인 3 개
+    x_max = max(KPI_MAX_PCT + 5, ytd_twr + 3, 25)
+    x_min = min(0, ytd_twr - 3)
+
+    fig_kpi = go.Figure()
+    bar_color = '#2e7d32' if ytd_twr >= 0 else '#c62828'
+    fig_kpi.add_trace(go.Bar(
+        y=['YTD'],
+        x=[ytd_twr],
+        orientation='h',
+        marker_color=bar_color,
+        text=[f'{ytd_twr:+.2f}%'],
+        textposition='inside',
+        textfont=dict(size=15, color='white'),
+        showlegend=False,
+        hovertemplate=f'현재 YTD: {ytd_twr:+.2f}%<extra></extra>',
+    ))
+    for tgt, name, color in [
+        (KPI_MIN_PCT, '최소', '#ff9800'),
+        (KPI_AVG_PCT, '평균', '#2196f3'),
+        (KPI_MAX_PCT, '최대', '#9c27b0'),
+    ]:
+        fig_kpi.add_vline(
+            x=tgt,
+            line=dict(color=color, width=2, dash='dash'),
+            annotation_text=f'{name} {tgt:.0f}%',
+            annotation_position='top',
+            annotation_font=dict(size=12, color=color),
+        )
+    fig_kpi.add_vline(x=0, line=dict(color='gray', width=1))
+    fig_kpi.update_layout(
+        height=180,
+        margin=dict(l=40, r=20, t=40, b=40),
+        font=dict(size=14, family='sans-serif'),
+        xaxis=dict(
+            title=dict(text='수익률 (%)', font=dict(size=13)),
+            range=[x_min, x_max],
+            tickfont=dict(size=12),
+            gridcolor='#eeeeee',
+            zeroline=False,
+        ),
+        yaxis=dict(showticklabels=False),
+        plot_bgcolor='white',
+    )
+    st.plotly_chart(fig_kpi, use_container_width=True)
+
+    # ₩ 환산 expander (자금 흐름 caveat 포함)
+    with st.expander("📊 ₩ 환산 (대략적 참고)"):
+        # 올해 누적 손익 (월별 합)
+        ytd_pl_kpi = sum(
+            (get_perf_raw(f'손익_{m}') or 0)
+            for m in month_cols_kpi if m.startswith(_kpi_year)
+        )
+        # 연초 자산 추정 ≈ 현재 자산 - 올해 손익
+        estimated_yr_start = total_assets - ytd_pl_kpi
+
+        st.markdown(f"""
+**연초 자산 추정**: ₩{estimated_yr_start:,.0f}  *(현재 총자산 ₩{total_assets:,.0f} − 올해 손익 ₩{ytd_pl_kpi:+,.0f})*
+
+| 목표 | 수익률 | 예상 ₩ 수익 (연초자산 × 목표%) |
+|------|--------|------------------------------|
+| 최소 | {KPI_MIN_PCT:.0f}% | ₩{estimated_yr_start * KPI_MIN_PCT / 100:,.0f} |
+| 평균 | {KPI_AVG_PCT:.0f}% | ₩{estimated_yr_start * KPI_AVG_PCT / 100:,.0f} |
+| 최대 | {KPI_MAX_PCT:.0f}% | ₩{estimated_yr_start * KPI_MAX_PCT / 100:,.0f} |
+
+**현재 올해 실제 손익**: ₩{ytd_pl_kpi:+,.0f}
+
+⚠️ **주의 — 호섭님이 짚으신 그 한계**:
+- 위 ₩ 수익 = *"연초 자산만큼만 운용했다면"* 의 추정치
+- 올해 자금 유입 (입금) / 유출 (출금) 있으면 실제 ₩ 손익은 위 추정과 다름
+- **정확한 KPI 추적은 위 막대 차트 (TWR %)** 로. 이게 자금 흐름 자동 제거된 *"순수 운용 실력"*
+- ₩ 수치는 *"감 잡기"* 용 참고치
+""")
 
 # ---------------------------------------------------------
 # [블록 2] 비중 도넛 3개
@@ -602,6 +749,92 @@ else:
         bargap=0.3,
     )
     st.plotly_chart(fig_short, use_container_width=True)
+
+# ---------------------------------------------------------
+# [블록 3.5] 단기 손익 (KRW) — 수익률 차트의 자매
+# 이번달/지난달/2달전 + YTD + 5/14~ + 7/21~ + 누적
+# ---------------------------------------------------------
+st.subheader("💰 단기 손익")
+
+if perf_row is None:
+    st.info("손익 데이터 없음 (perf_row 못 찾음)")
+else:
+    # 사용 가능한 월 컬럼 검색
+    month_cols_pl = sorted([c for c in df_perf.columns if re.match(r'^\d{4}-\d{2}$', str(c))])
+
+    pl_labels = []
+    pl_values = []
+
+    # 이번달 / 지난달 / 2달전
+    if month_cols_pl:
+        for offset, label_prefix in [(-1, '이번달'), (-2, '지난달'), (-3, '2달전')]:
+            if abs(offset) <= len(month_cols_pl):
+                mcol = month_cols_pl[offset]
+                v = get_perf_raw(f'손익_{mcol}')
+                yymm = mcol[2:].replace('-', '/')  # '26/04'
+                pl_labels.append(f'{label_prefix}<br>({yymm})')
+                pl_values.append(v if v is not None else 0)
+
+    # YTD (올해 월별 합)
+    if month_cols_pl:
+        current_month = month_cols_pl[-1]
+        current_year = current_month.split('-')[0]
+        ytd_months = [c for c in month_cols_pl if c.startswith(current_year)]
+        ytd_total = sum((get_perf_raw(f'손익_{m}') or 0) for m in ytd_months)
+        pl_labels.append(f'YTD<br>({current_year})')
+        pl_values.append(ytd_total)
+
+    # 5/14~ (멘토 inception)
+    pl_5_14 = get_perf_raw('지정_손익(25-05-14~)')
+    if pl_5_14 is not None:
+        pl_labels.append('5/14~')
+        pl_values.append(pl_5_14)
+
+    # 7/21~ (HS inception)
+    pl_7_21 = get_perf_raw('지정_손익(25-07-21~)')
+    if pl_7_21 is not None:
+        pl_labels.append('7/21~')
+        pl_values.append(pl_7_21)
+
+    # 누적 (전체기간)
+    cumulative_pl = get_perf_raw('평가손익')
+    if cumulative_pl is None:
+        cumulative_pl = total_pl  # fallback: dashboard 계산값
+    pl_labels.append('누적')
+    pl_values.append(cumulative_pl)
+
+    if not pl_labels:
+        st.info("표시할 손익 데이터 없음")
+    else:
+        # 색상: 양수=초록, 음수=빨강
+        pl_colors = ['#2e7d32' if v >= 0 else '#c62828' for v in pl_values]
+
+        fig_pl_chart = go.Figure(go.Bar(
+            x=pl_labels,
+            y=pl_values,
+            marker_color=pl_colors,
+            text=[f'₩{v:+,.0f}' for v in pl_values],
+            textposition='outside',
+            textfont=dict(size=12, color='#222', family='sans-serif'),
+            cliponaxis=False,
+            hovertemplate='<b>%{x}</b><br>%{text}<extra></extra>',
+        ))
+        fig_pl_chart.add_hline(y=0, line_color='gray', line_width=1)
+        fig_pl_chart.update_layout(
+            height=420,
+            margin=dict(l=40, r=20, t=20, b=70),
+            showlegend=False,
+            font=dict(size=14, family='sans-serif'),
+            yaxis=dict(
+                title=dict(text="손익 (₩)", font=dict(size=14)),
+                tickfont=dict(size=11),
+                gridcolor='#eeeeee',
+            ),
+            xaxis=dict(tickfont=dict(size=12)),
+            bargap=0.3,
+            plot_bgcolor='white',
+        )
+        st.plotly_chart(fig_pl_chart, use_container_width=True)
 
 st.divider()
 
@@ -820,6 +1053,51 @@ for col_st, (label, target, current) in zip(cols_m, metric_values):
             delta_color="off",
         )
 
+# 그룹 막대 차트 — 목표 vs 현재 시각 비교
+chart_labels = [m[0] for m in metric_values]
+target_vals = [m[1] if m[1] is not None else 0 for m in metric_values]
+current_vals = [m[2] if m[2] is not None else 0 for m in metric_values]
+
+fig_gln = go.Figure()
+if show_target:
+    fig_gln.add_trace(go.Bar(
+        name='목표',
+        x=chart_labels,
+        y=target_vals,
+        marker_color='#90caf9',  # 연한 파랑
+        text=[f'{v:.1f}%' for v in target_vals],
+        textposition='outside',
+        textfont=dict(size=13, color='#1565c0'),
+    ))
+fig_gln.add_trace(go.Bar(
+    name='현재' if show_target else '현재 비중',
+    x=chart_labels,
+    y=current_vals,
+    marker_color='#1565c0',  # 진한 파랑
+    text=[f'{v:.1f}%' for v in current_vals],
+    textposition='outside',
+    textfont=dict(size=13, color='#0d47a1'),
+))
+fig_gln.update_layout(
+    barmode='group',
+    height=300,
+    margin=dict(l=20, r=20, t=30, b=40),
+    showlegend=show_target,
+    legend=dict(orientation='h', yanchor='top', y=1.12, xanchor='center', x=0.5,
+                font=dict(size=13)),
+    font=dict(size=14, family='sans-serif'),
+    yaxis=dict(
+        title=dict(text='비중 (%)', font=dict(size=14)),
+        tickfont=dict(size=12),
+        gridcolor='#eeeeee',
+    ),
+    xaxis=dict(tickfont=dict(size=15)),
+    bargap=0.25,
+    bargroupgap=0.08,
+    plot_bgcolor='white',
+)
+st.plotly_chart(fig_gln, use_container_width=True)
+
 # 출처/가중치 캡션
 if view == "전체":
     total_aum = mentor_aum + hs_aum
@@ -836,6 +1114,104 @@ else:
         "💡 위 값은 `rebalancing_master` 시트의 자동 수식 결과 — "
         "시트에서 수식/목표 바꾸시면 dashboard 도 자동 따라옵니다."
     )
+
+# ---------------------------------------------------------
+# [블록 5.5] 퇴직연금 가드 (HS 뷰 전용)
+# 220914426167, 717190227129 의 위험/안전 비중을 실시간 dashboard_data 로 계산.
+# 호섭님 시트 가드와 동일 로직, 폰에서도 한눈에 확인 가능.
+# ---------------------------------------------------------
+PENSION_ACCS = ['220914426167', '717190227129']
+
+if view == "HS 포폴":
+    st.divider()
+    st.subheader("🛡️ 퇴직연금 가드")
+    st.caption(
+        "**규제**: 위험자산 ≤ 70% / 안전자산 ≥ 30% (계좌 단위). "
+        "분류: 위험 = 채권혼합·안전자산·방위군 외 모든 종목 / 안전 = 채권혼합 + 안전자산 (현금 포함)"
+    )
+
+    pension_rows = []
+    for acc in PENSION_ACCS:
+        sub = df_view[df_view['account_clean'] == acc]
+        if sub.empty:
+            continue
+
+        themes = sub.get('theme', pd.Series([''] * len(sub))).astype(str).str.strip()
+        positions = sub.get('postion', pd.Series([''] * len(sub))).astype(str).str.strip()
+
+        is_safe = (themes == '채권혼합') | (themes == '안전 자산')
+        is_hedge = (positions == '방위군')
+        is_risk = ~is_safe & ~is_hedge
+
+        risk_mv = sub.loc[is_risk, 'market_value_krw'].sum()
+        safe_mv = sub.loc[is_safe, 'market_value_krw'].sum()
+        hedge_mv = sub.loc[is_hedge, 'market_value_krw'].sum()
+        total_mv = sub['market_value_krw'].sum()
+
+        if total_mv == 0:
+            continue
+
+        risk_pct = risk_mv / total_mv * 100
+        safe_pct = safe_mv / total_mv * 100
+
+        # 상태 (위험 ≤ 70 AND 안전 ≥ 30 모두 만족해야 ✅)
+        if risk_pct > 70 or safe_pct < 30:
+            status = "🚨 한도 초과"
+        elif risk_pct > 65 or safe_pct < 35:
+            status = "⚠️ 임박"
+        else:
+            status = "✅ 여유"
+
+        pension_rows.append({
+            '계좌': acc,
+            '계좌 AUM': total_mv,
+            '위험자산 (₩)': risk_mv,
+            '위험 %': risk_pct,
+            '안전자산 (₩)': safe_mv,
+            '안전 %': safe_pct,
+            '상태': status,
+        })
+
+    if pension_rows:
+        df_pension = pd.DataFrame(pension_rows)
+
+        # 위험/안전 셀에 색상 코딩
+        def _color_risk(v):
+            try:
+                vv = float(v)
+                if vv > 70:
+                    return 'background-color: #ffebee; color: #b71c1c; font-weight: 600'
+                if vv > 65:
+                    return 'background-color: #fff8e1; color: #f57c00; font-weight: 600'
+                return 'color: #1b5e20; font-weight: 600'
+            except: return ''
+
+        def _color_safe(v):
+            try:
+                vv = float(v)
+                if vv < 30:
+                    return 'background-color: #ffebee; color: #b71c1c; font-weight: 600'
+                if vv < 35:
+                    return 'background-color: #fff8e1; color: #f57c00; font-weight: 600'
+                return 'color: #1b5e20; font-weight: 600'
+            except: return ''
+
+        styled_pension = (
+            df_pension.style
+            .format({
+                '계좌 AUM': '₩{:,.0f}',
+                '위험자산 (₩)': '₩{:,.0f}',
+                '위험 %': '{:.1f}%',
+                '안전자산 (₩)': '₩{:,.0f}',
+                '안전 %': '{:.1f}%',
+            })
+            .map(_color_risk, subset=['위험 %'])
+            .map(_color_safe, subset=['안전 %'])
+        )
+
+        st.dataframe(styled_pension, use_container_width=True, hide_index=True)
+    else:
+        st.info("퇴직연금 계좌 데이터 없음 (220914426167, 717190227129)")
 
 # ---------------------------------------------------------
 # [블록 6] 종목별 리밸런싱 표 (멘토 / HS 뷰에서만)
@@ -982,10 +1358,106 @@ if view in ("멘토 포폴", "HS 포폴"):
                 )
 
 # ---------------------------------------------------------
+# [블록 7] 월별 / 분기별 수익률 (모든 뷰 공통, 가장 하단)
+# performance_summary 시트에 자동 생성된 월/분기 컬럼 surface
+# ---------------------------------------------------------
+st.divider()
+st.subheader("📅 월별 / 분기별 수익률")
+
+if perf_row is None:
+    st.info(f"performance_summary 시트에서 '{perf_label}' 행을 못 찾아 표시 불가")
+else:
+    # 사용 가능한 월/분기 컬럼 자동 검색 (패턴 매칭)
+    month_cols = sorted([c for c in df_perf.columns if re.match(r'^\d{4}-\d{2}$', str(c))])
+    quarter_cols = sorted([c for c in df_perf.columns if re.match(r'^\d{4}-Q\d$', str(c))])
+
+    if not month_cols and not quarter_cols:
+        st.info("월별/분기별 컬럼이 performance_summary 에 없음 (performance.py 최신 버전 실행 필요)")
+    else:
+        def render_period_chart(period_cols, label):
+            if not period_cols:
+                st.info(f"{label} 데이터 없음")
+                return
+
+            twr_vals = [get_perf_pct(c) if get_perf_pct(c) is not None else 0 for c in period_cols]
+            mwr_vals = [get_perf_pct(f'MWR_{c}') if get_perf_pct(f'MWR_{c}') is not None else 0 for c in period_cols]
+            pl_vals = [get_perf_raw(f'손익_{c}') if get_perf_raw(f'손익_{c}') is not None else 0 for c in period_cols]
+
+            # 차트 1: TWR + MWR 그룹 막대
+            fig_ret = go.Figure()
+            fig_ret.add_trace(go.Bar(
+                name='TWR',
+                x=period_cols,
+                y=twr_vals,
+                marker_color='#1976d2',
+                text=[f'{v:+.1f}%' for v in twr_vals],
+                textposition='outside',
+                textfont=dict(size=11),
+            ))
+            fig_ret.add_trace(go.Bar(
+                name='MWR',
+                x=period_cols,
+                y=mwr_vals,
+                marker_color='#fb8c00',
+                text=[f'{v:+.1f}%' for v in mwr_vals],
+                textposition='outside',
+                textfont=dict(size=11),
+            ))
+            fig_ret.add_hline(y=0, line_color='gray', line_width=1)
+            fig_ret.update_layout(
+                barmode='group',
+                title=dict(text=f'{label} 수익률 — TWR / MWR (%)', font=dict(size=15)),
+                height=380,
+                margin=dict(l=20, r=20, t=60, b=50),
+                legend=dict(orientation='h', yanchor='top', y=1.08, xanchor='center', x=0.5,
+                            font=dict(size=13)),
+                font=dict(size=13, family='sans-serif'),
+                yaxis=dict(title='수익률 (%)', tickfont=dict(size=11), gridcolor='#eeeeee'),
+                xaxis=dict(tickfont=dict(size=12), tickangle=-30),
+                bargap=0.2,
+                bargroupgap=0.08,
+                plot_bgcolor='white',
+            )
+            st.plotly_chart(fig_ret, use_container_width=True)
+
+            # 차트 2: 손익 (KRW) — 양수=초록, 음수=빨강
+            colors = ['#2e7d32' if v >= 0 else '#c62828' for v in pl_vals]
+            fig_pl = go.Figure(go.Bar(
+                x=period_cols,
+                y=pl_vals,
+                marker_color=colors,
+                text=[f'₩{v:+,.0f}' for v in pl_vals],
+                textposition='outside',
+                textfont=dict(size=10),
+                cliponaxis=False,
+            ))
+            fig_pl.add_hline(y=0, line_color='gray', line_width=1)
+            fig_pl.update_layout(
+                title=dict(text=f'{label} 손익 (KRW)', font=dict(size=15)),
+                height=320,
+                margin=dict(l=20, r=20, t=50, b=50),
+                showlegend=False,
+                font=dict(size=13, family='sans-serif'),
+                yaxis=dict(title='손익 (₩)', tickfont=dict(size=11), gridcolor='#eeeeee'),
+                xaxis=dict(tickfont=dict(size=12), tickangle=-30),
+                bargap=0.3,
+                plot_bgcolor='white',
+            )
+            st.plotly_chart(fig_pl, use_container_width=True)
+
+        tab_m, tab_q = st.tabs([
+            f"📊 월별 ({len(month_cols)}개월)",
+            f"📊 분기별 ({len(quarter_cols)}개 분기)",
+        ])
+        with tab_m:
+            render_period_chart(month_cols, '월별')
+        with tab_q:
+            render_period_chart(quarter_cols, '분기별')
+
+# ---------------------------------------------------------
 st.divider()
 st.caption(
-    "📱 호섭님 포트폴리오 모바일 대시보드 — Phase 1~3 완성. "
-    "다음 단계: Streamlit Cloud 배포로 어디서나 접근 가능하게."
+    "📱 호섭님 포트폴리오 모바일 대시보드 — 블록 1~7 완성"
 )
 
 # ---------------------------------------------------------
