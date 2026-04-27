@@ -26,7 +26,9 @@ import gspread
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
+import requests
 import streamlit as st
+import yfinance as yf
 
 # ---------------------------------------------------------
 # 설정
@@ -143,6 +145,110 @@ def load_sheet(sheet_name, max_retries=3):
     raise last_err
 
 # ---------------------------------------------------------
+# 실시간 가격 헬퍼 (Step C 장중 실시간 뷰용)
+# - 한국 주식: 네이버 모바일 API (sub-second, 정확)
+# - 해외 주식: yfinance batch (배치 호출, 15분 지연)
+# - 캐시 2분 (API rate limit 보호)
+# ---------------------------------------------------------
+EXCHANGE_TO_CURRENCY = {
+    'NASDAQ': 'USD', 'NYSE': 'USD', 'AMEX': 'USD',
+    'HKG': 'HKD',
+    'SSE': 'CNY', 'SZSE': 'CNY',
+    'TSE': 'JPY',
+}
+
+@st.cache_data(ttl=60, show_spinner=False)
+def get_naver_intraday(ticker):
+    """한국 주식 장중 데이터 — 네이버 모바일 API.
+    Returns dict {current, prev_close, currency='KRW'} or None."""
+    try:
+        url = f"https://m.stock.naver.com/api/stock/{ticker}/basic"
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        res = requests.get(url, headers=headers, timeout=5)
+        if res.status_code != 200:
+            return None
+        data = res.json()
+        current = float(str(data.get('closePrice', '0')).replace(',', ''))
+        change = float(str(data.get('compareToPreviousClosePrice', '0')).replace(',', ''))
+        if current <= 0:
+            return None
+        prev = current - change
+        return {'current': current, 'prev_close': prev, 'currency': 'KRW'}
+    except Exception:
+        return None
+
+@st.cache_data(ttl=60, show_spinner=False)
+def get_yf_batch(yf_tickers_tuple):
+    """yfinance 배치 호출 (외국 주식). Returns dict {yf_ticker: {current, prev_close}}"""
+    yf_tickers = list(yf_tickers_tuple)
+    if not yf_tickers:
+        return {}
+    results = {}
+    try:
+        data = yf.download(yf_tickers, period='2d', interval='1d',
+                           progress=False, auto_adjust=False)
+        for t in yf_tickers:
+            try:
+                if len(yf_tickers) == 1:
+                    closes = data['Close'].dropna()
+                else:
+                    closes = data[('Close', t)].dropna()
+                if len(closes) >= 2:
+                    results[t] = {
+                        'current': float(closes.iloc[-1]),
+                        'prev_close': float(closes.iloc[-2]),
+                    }
+                elif len(closes) == 1:
+                    # 어제 데이터만 있고 오늘 데이터 없음
+                    results[t] = {
+                        'current': float(closes.iloc[-1]),
+                        'prev_close': float(closes.iloc[-1]),
+                    }
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return results
+
+@st.cache_data(ttl=120, show_spinner=False)
+def get_fx_to_krw(currency_code):
+    """1 단위 외화 → KRW 환율 (현재)."""
+    if currency_code == 'KRW':
+        return 1.0
+    try:
+        rate_data = yf.download(f"{currency_code}KRW=X", period='2d',
+                                interval='1d', progress=False, auto_adjust=False)
+        if not rate_data.empty:
+            closes = rate_data['Close'].dropna()
+            if len(closes) > 0:
+                return float(closes.iloc[-1])
+    except Exception:
+        pass
+    return None
+
+def _build_yf_ticker(ticker, exchange):
+    """ticker + exchange → yfinance ticker 변환."""
+    ex = str(exchange).upper().strip()
+    if ex in ('KOSPI', 'ETF', 'ETN'):
+        return f"{ticker}.KS"
+    elif ex == 'KOSDAQ':
+        return f"{ticker}.KQ"
+    elif ex == 'HKG':
+        return f"{str(ticker).lstrip('0')}.HK"
+    elif ex == 'SSE':
+        return f"{ticker}.SS"
+    elif ex == 'SZSE':
+        return f"{ticker}.SZ"
+    elif ex == 'TSE':
+        return f"{ticker}.T"
+    elif ex in ('NASDAQ', 'NYSE', 'AMEX'):
+        return ticker
+    # fallback: 6자리 숫자면 KS, 아니면 그대로
+    if str(ticker).isdigit() and len(str(ticker)) == 6:
+        return f"{ticker}.KS"
+    return ticker
+
+# ---------------------------------------------------------
 # 사이드바
 # ---------------------------------------------------------
 with st.sidebar:
@@ -150,7 +256,7 @@ with st.sidebar:
 
     view = st.radio(
         "뷰 선택",
-        ["전체", "멘토 포폴", "HS 포폴"],
+        ["전체", "멘토 포폴", "HS 포폴", "💼 장중 실시간", "📰 시장 동향"],
         index=0,
     )
 
@@ -206,13 +312,432 @@ except Exception as e:
 # 숫자 컬럼 정규화
 for col in ['market_value_krw', 'unrealized_pl_krw', 'realized_pl_krw',
             'cumulative_pl_krw', 'total_cost_krw', 'net_invested_capital',
-            'quantity', 'current_price_krw']:
+            'quantity', 'current_price_krw', 'avg_cost_krw']:
     if col in df_dashboard.columns:
         df_dashboard[col] = to_num(df_dashboard[col])
 
 # 그룹 매핑
 df_dashboard['account_clean'] = df_dashboard['account'].apply(clean_account)
 df_dashboard['group_name'] = df_dashboard['account_clean'].map(ACCOUNT_GROUPS).fillna('기타')
+
+# =========================================================
+# [시장 동향 뷰] — market_data 시트 기반
+# 매일 아침 시장 체크용: 카드 (어제 마감) + 선 차트 (추세)
+# =========================================================
+if view == "📰 시장 동향":
+    st.title("📰 시장 동향")
+    st.caption(
+        "매일 아침 시장 체크용 — 한국/미국/중국/독일 시장, 환율, 금리, 원자재, 크립토, 변동성, 자금흐름"
+    )
+
+    # market_data 시트 로드
+    try:
+        df_market = load_sheet("market_data")
+    except Exception as e:
+        st.error(f"market_data 시트 로드 실패: {e}")
+        st.stop()
+
+    if df_market.empty:
+        st.warning("market_data 시트가 비어있습니다.")
+        st.stop()
+
+    # date 컬럼 파싱
+    date_col_name = df_market.columns[0]  # 첫 컬럼이 date
+    df_market['_date'] = pd.to_datetime(df_market[date_col_name], errors='coerce')
+    df_market = df_market.dropna(subset=['_date']).sort_values('_date').reset_index(drop=True)
+
+    if df_market.empty:
+        st.warning("유효한 날짜 데이터가 없습니다.")
+        st.stop()
+
+    # 숫자 컬럼 변환
+    for col in df_market.columns:
+        if col not in (date_col_name, '_date'):
+            df_market[col] = pd.to_numeric(
+                df_market[col].astype(str).str.replace(r'[^\d.\-]', '', regex=True),
+                errors='coerce'
+            )
+
+    latest_market = df_market.iloc[-1]
+    latest_market_date = latest_market['_date']
+
+    st.caption(f"📅 기준일: **{latest_market_date.strftime('%Y-%m-%d')}** "
+               f"(market_data 시트 최신 행)")
+
+    # ── 시장 그룹 매핑 ──
+    MARKET_GROUPS = [
+        ("🇰🇷 한국", [
+            ('KOSPI', 'KOSPI_price', 'KOSPI_chg_pct'),
+            ('KOSDAQ', 'KOSDAQ_price', 'KOSDAQ_chg_pct'),
+        ]),
+        ("🇺🇸 미국", [
+            ('S&P 500', 'SP500_price', 'SP500_chg_pct'),
+            ('NASDAQ', 'NASDAQ_price', 'NASDAQ_chg_pct'),
+        ]),
+        ("🌏 중국 / 독일", [
+            ('Shanghai', 'SHANGHAI_price', 'SHANGHAI_chg_pct'),
+            ('DAX', 'DAX_price', 'DAX_chg_pct'),
+        ]),
+        ("💱 환율 / 변동성", [
+            ('USD/KRW', 'USDKRW_price', 'USDKRW_chg_pct'),
+            ('USD Index', 'USD_IDX_price', 'USD_IDX_chg_pct'),
+            ('VIX', 'VIX_price', 'VIX_chg_pct'),
+        ]),
+        ("📈 채권 금리", [
+            ('US 10Y', 'US_10Y_Bond_rate', 'US_10Y_Bond_chg_bps'),
+            ('US 30Y', 'US_30Y_Bond_rate', 'US_30Y_Bond_chg_bps'),
+            ('KR 10Y', 'KR_10Y_Bond_rate', 'KR_10Y_Bond_chg_bps'),
+        ]),
+        ("🛢️ 원자재 / ₿ 크립토", [
+            ('WTI', 'WTI_price', 'WTI_chg_pct'),
+            ('GOLD', 'GOLD_price', 'GOLD_chg_pct'),
+            ('BTC', 'BTC_price', 'BTC_chg_pct'),
+        ]),
+        ("💰 한국 자금 흐름", [
+            ('고객예탁금 (억원)', 'Customer_Deposit_value', 'Customer_Deposit_chg_pct'),
+            ('신용잔고 (억원)', 'Credit_Balance_value', 'Credit_Balance_chg_pct'),
+        ]),
+    ]
+
+    def _fmt_market_value(val, col_name):
+        if val is None or pd.isna(val):
+            return "-"
+        if 'rate' in col_name:
+            return f"{val:.3f}"
+        if abs(val) >= 10000:
+            return f"{val:,.0f}"
+        return f"{val:,.2f}"
+
+    def _fmt_market_change(val, col_name):
+        if val is None or pd.isna(val):
+            return None
+        if 'bps' in col_name:
+            return f"{val:+.1f} bps"
+        # _chg_pct 계열 — 소수(0.0234) vs 퍼센트(2.34) 자동 감지
+        if abs(val) <= 1.5:
+            return f"{val * 100:+.2f}%"
+        return f"{val:+.2f}%"
+
+    # ── 카드 섹션 ──
+    st.subheader("📊 오늘 시장 카드")
+
+    for group_name, items in MARKET_GROUPS:
+        st.markdown(f"**{group_name}**")
+        cols = st.columns(len(items))
+        for col_st, (label, val_col, chg_col) in zip(cols, items):
+            val = latest_market.get(val_col) if val_col in df_market.columns else None
+            chg = latest_market.get(chg_col) if chg_col in df_market.columns else None
+            val_str = _fmt_market_value(val, val_col)
+            chg_str = _fmt_market_change(chg, chg_col)
+            col_st.metric(label, val_str, delta=chg_str)
+
+    # ── 선 차트 섹션 ──
+    st.divider()
+    st.subheader("📈 추세 비교")
+
+    # 차트 컨트롤
+    cc1, cc2, cc3 = st.columns([2, 1, 1])
+    all_indices = [item[0] for _, items in MARKET_GROUPS for item in items]
+    label_to_col = {item[0]: item[1] for _, items in MARKET_GROUPS for item in items}
+
+    with cc1:
+        default_indices = [
+            i for i in ['KOSPI', 'NASDAQ', 'USD/KRW']
+            if i in all_indices and label_to_col[i] in df_market.columns
+        ]
+        selected_indices = st.multiselect(
+            "지표 선택 (여러 개 비교 가능)",
+            options=all_indices,
+            default=default_indices,
+        )
+    with cc2:
+        time_range = st.selectbox(
+            "기간",
+            ["1주", "1달", "3달", "6달", "1년", "전체"],
+            index=2,
+        )
+    with cc3:
+        normalize = st.toggle(
+            "정규화",
+            value=True,
+            help="여러 지표를 같은 스케일로 비교 (시작점=100)",
+        )
+
+    # 시간 범위 적용
+    if time_range != "전체":
+        days_map = {"1주": 7, "1달": 30, "3달": 90, "6달": 180, "1년": 365}
+        cutoff = latest_market_date - pd.Timedelta(days=days_map[time_range])
+        df_chart = df_market[df_market['_date'] >= cutoff]
+    else:
+        df_chart = df_market.copy()
+
+    if df_chart.empty or not selected_indices:
+        st.info("기간 내 데이터 없음 또는 지표 미선택")
+    else:
+        fig_market = go.Figure()
+        for idx_label in selected_indices:
+            col = label_to_col.get(idx_label)
+            if not col or col not in df_chart.columns:
+                continue
+            series = df_chart[col].copy()
+            if normalize:
+                first_valid = series.dropna()
+                if not first_valid.empty and first_valid.iloc[0] != 0:
+                    series = series / first_valid.iloc[0] * 100
+            fig_market.add_trace(go.Scatter(
+                x=df_chart['_date'],
+                y=series,
+                name=idx_label,
+                mode='lines',
+                line=dict(width=2),
+                hovertemplate=f'<b>{idx_label}</b><br>%{{x|%Y-%m-%d}}<br>%{{y:,.2f}}<extra></extra>',
+            ))
+
+        title_text = (
+            f"{time_range} 추세"
+            + (" (정규화: 시작=100)" if normalize else " (raw 값)")
+        )
+        fig_market.update_layout(
+            title=dict(text=title_text, font=dict(size=15)),
+            height=460,
+            margin=dict(l=40, r=20, t=60, b=40),
+            font=dict(size=13, family='sans-serif'),
+            yaxis=dict(
+                title=dict(
+                    text="지수 (시작=100)" if normalize else "값",
+                    font=dict(size=13),
+                ),
+                tickfont=dict(size=11),
+                gridcolor='#eeeeee',
+            ),
+            xaxis=dict(tickfont=dict(size=11)),
+            legend=dict(
+                orientation='h', yanchor='top', y=1.10,
+                xanchor='center', x=0.5, font=dict(size=12),
+            ),
+            plot_bgcolor='white',
+            hovermode='x unified',
+        )
+        st.plotly_chart(fig_market, use_container_width=True)
+
+        # 정규화 설명
+        if normalize:
+            st.caption(
+                "💡 **정규화 모드**: 각 지표의 *기간 시작 시점 값*을 100 으로 맞춰서 표시. "
+                "예: KOSPI 가 3000 → 3300 가면 100 → 110 으로 그려짐. "
+                "절대값이 다른 지표 (KOSPI 3000 vs USD/KRW 1370) 도 같은 스케일에서 비교 가능."
+            )
+        else:
+            st.caption(
+                "💡 **raw 모드**: 각 지표를 실제 값 그대로 그림. "
+                "값 단위가 비슷한 지표끼리 비교할 때 유용."
+            )
+
+    st.stop()  # 시장 동향 뷰는 여기서 종료
+
+# =========================================================
+# [장중 실시간 뷰] — 별도 흐름, st.stop() 으로 종료
+# 한국 주식: 네이버 모바일 API
+# 외국 주식: yfinance batch + 현재 환율 → KRW 환산
+# =========================================================
+if view == "💼 장중 실시간":
+    st.title("💼 장중 실시간 수익률")
+    st.caption(
+        f"갱신 시각: {datetime.now().strftime('%H:%M:%S KST')} · "
+        "최신 가격 보려면 페이지 새로고침 또는 사이드바 *🔄 데이터 새로고침* 클릭"
+    )
+
+    # 계좌 선택
+    accounts_avail = sorted([a for a in df_dashboard['account_clean'].unique() if a])
+    if not accounts_avail:
+        st.warning("계좌 데이터가 없습니다.")
+        st.stop()
+
+    default_idx = (accounts_avail.index('220914426167')
+                   if '220914426167' in accounts_avail else 0)
+    selected_acc = st.selectbox(
+        "계좌 선택",
+        accounts_avail,
+        index=default_idx,
+        help="장중 실시간 가격으로 오늘 손익을 계산합니다.",
+    )
+
+    # 해당 계좌의 보유 종목 (현금 제외, 수량 > 0)
+    sub_rt = df_dashboard[df_dashboard['account_clean'] == selected_acc].copy()
+    sub_rt = sub_rt[~sub_rt['ticker'].astype(str).str.startswith('CASH')]
+    sub_rt = sub_rt[sub_rt['quantity'].abs() > 0]
+
+    if sub_rt.empty:
+        st.info("이 계좌에 보유 종목이 없습니다 (현금만 있거나 데이터 없음).")
+        st.stop()
+
+    # 한국 / 외국 분리
+    # 한국 시장 판단: 6자 길이 + 영문/숫자 혼합 가능 + 숫자 1개 이상 + 거래소 한국
+    # (예: 091180 = 일반 주식, 0035T0 = 영문 혼합 ETF 모두 한국)
+    def _is_kr_ticker(ticker_s, exchange_s):
+        s = str(ticker_s).strip()
+        if len(s) != 6 or not s.isalnum() or not any(c.isdigit() for c in s):
+            return False
+        if s.isdigit():
+            return True  # 6자리 숫자 → 일반 한국주식
+        # 영문 혼합 → 거래소 힌트로 검증
+        ex = str(exchange_s).upper().strip()
+        return ex in ('KOSPI', 'KOSDAQ', 'ETF', 'ETN', '')
+
+    kr_rows = []      # [(ticker, name, qty, avg_cost), ...]
+    foreign_rows = [] # [(ticker, name, qty, avg_cost, exchange, yf_ticker), ...]
+    for _, r in sub_rt.iterrows():
+        tk = str(r['ticker']).strip()
+        nm = str(r.get('name', tk))
+        qty = float(r['quantity'])
+        avg_cost = float(r.get('avg_cost_krw', 0) or 0)
+        ex = str(r.get('exchange', '')).upper()
+
+        if _is_kr_ticker(tk, ex):
+            kr_rows.append((tk, nm, qty, avg_cost))
+        else:
+            yf_t = _build_yf_ticker(tk, ex)
+            foreign_rows.append((tk, nm, qty, avg_cost, ex, yf_t))
+
+    # 실시간 가격 조회
+    with st.spinner(f"실시간 가격 조회 중... (한국 {len(kr_rows)}개 / 외국 {len(foreign_rows)}개)"):
+        # 한국: 네이버 (sequential) — kr_rows: (ticker, name, qty, avg_cost)
+        kr_prices = {}
+        for tk, _, _, _ in kr_rows:
+            r = get_naver_intraday(tk)
+            if r:
+                kr_prices[tk] = r
+
+        # 외국: yfinance batch — foreign_rows: (ticker, name, qty, avg_cost, exchange, yf_ticker)
+        foreign_yf_tuple = tuple(sorted(set(
+            row[5] for row in foreign_rows  # yf_ticker is index 5
+        )))
+        foreign_yf_data = get_yf_batch(foreign_yf_tuple) if foreign_yf_tuple else {}
+
+        # 환율 (필요한 통화만)
+        currencies = set()
+        for row in foreign_rows:
+            ex = row[4]  # exchange is index 4
+            currencies.add(EXCHANGE_TO_CURRENCY.get(ex, 'USD'))
+        fx_rates = {c: (get_fx_to_krw(c) or 1.0) for c in currencies}
+
+    # 결과 행 생성
+    result_rows = []
+
+    def _qty_fmt(q):
+        return int(q) if q == int(q) else round(q, 2)
+
+    def _build_row(tk, nm, qty, avg_cost, prev_orig, curr_orig, fx):
+        prev_krw = prev_orig * fx
+        curr_krw = curr_orig * fx
+        change_pct = ((curr_orig - prev_orig) / prev_orig * 100) if prev_orig > 0 else 0
+        today_pl = (curr_krw - prev_krw) * qty
+        cost_total = avg_cost * qty
+        current_value = curr_krw * qty
+        cumulative_pl = current_value - cost_total
+        # 컬럼 순서: 식별 → 매입/평가/누적 (4개 묶음) → 오늘 변동 (4개)
+        return {
+            'Ticker': tk,
+            '종목명': nm,
+            '수량': _qty_fmt(qty),
+            '매입가': avg_cost,
+            '매입금액': cost_total,
+            '현재 평가액': current_value,
+            '누적 손익': cumulative_pl,
+            '전일종가': prev_krw,
+            '현재가': curr_krw,
+            '변동률': change_pct,
+            '오늘 손익': today_pl,
+            '_ok': True,
+        }
+
+    def _build_failed_row(tk, nm, qty, avg_cost):
+        cost_total = avg_cost * qty
+        return {
+            'Ticker': tk, '종목명': nm, '수량': _qty_fmt(qty),
+            '매입가': avg_cost, '매입금액': cost_total,
+            '현재 평가액': 0, '누적 손익': 0,
+            '전일종가': 0, '현재가': 0,
+            '변동률': 0, '오늘 손익': 0,
+            '_ok': False,
+        }
+
+    for tk, nm, qty, avg_cost in kr_rows:
+        r = kr_prices.get(tk)
+        if r and r.get('prev_close', 0) > 0:
+            result_rows.append(_build_row(tk, nm, qty, avg_cost, r['prev_close'], r['current'], 1.0))
+        else:
+            result_rows.append(_build_failed_row(tk, nm, qty, avg_cost))
+
+    for tk, nm, qty, avg_cost, ex, yf_t in foreign_rows:
+        r = foreign_yf_data.get(yf_t)
+        if r and r.get('prev_close', 0) > 0:
+            ccy = EXCHANGE_TO_CURRENCY.get(ex, 'USD')
+            fx = fx_rates.get(ccy, 1.0)
+            result_rows.append(_build_row(tk, nm, qty, avg_cost, r['prev_close'], r['current'], fx))
+        else:
+            result_rows.append(_build_failed_row(tk, nm, qty, avg_cost))
+
+    df_rt = pd.DataFrame(result_rows).sort_values('변동률', ascending=False)
+
+    # 요약 메트릭 (4개)
+    ok_rows = df_rt[df_rt['_ok']]
+    total_today_pl = ok_rows['오늘 손익'].sum()
+    total_value = ok_rows['현재 평가액'].sum()
+    total_cost = ok_rows['매입금액'].sum()
+    total_cumulative_pl = ok_rows['누적 손익'].sum()
+    total_prev = (ok_rows['전일종가'] * ok_rows['수량']).sum()
+    total_today_pct = (total_today_pl / total_prev * 100) if total_prev > 0 else 0
+    total_cum_pct = (total_cumulative_pl / total_cost * 100) if total_cost > 0 else 0
+
+    s1, s2, s3, s4 = st.columns(4)
+    s1.metric("오늘 손익", f"₩{total_today_pl:+,.0f}",
+              delta=f"{total_today_pct:+.2f}%", delta_color="off")
+    s2.metric("현재 평가액", f"₩{total_value:,.0f}")
+    s3.metric("누적 매입금액", f"₩{total_cost:,.0f}")
+    s4.metric("누적 손익", f"₩{total_cumulative_pl:+,.0f}",
+              delta=f"{total_cum_pct:+.2f}%", delta_color="off")
+
+    # 색상 코딩
+    def _color_change_rt(v):
+        try:
+            vv = float(v)
+            if vv > 0: return 'color: #2e7d32; font-weight: 600'
+            if vv < 0: return 'color: #c62828; font-weight: 600'
+        except: pass
+        return ''
+
+    display_rt = df_rt.drop(columns=['_ok'])
+    styled_rt = display_rt.style.format({
+        '매입가': '₩{:,.0f}',
+        '매입금액': '₩{:,.0f}',
+        '전일종가': '₩{:,.0f}',
+        '현재가': '₩{:,.0f}',
+        '변동률': '{:+.2f}%',
+        '오늘 손익': '₩{:+,.0f}',
+        '현재 평가액': '₩{:,.0f}',
+        '누적 손익': '₩{:+,.0f}',
+    }).map(_color_change_rt, subset=['변동률', '오늘 손익', '누적 손익'])
+
+    st.dataframe(styled_rt, use_container_width=True, hide_index=True,
+                 height=min(600, 60 + 38 * len(display_rt)))
+
+    failed = df_rt[~df_rt['_ok']]
+    if not failed.empty:
+        st.warning(
+            f"⚠️ 가격 조회 실패 {len(failed)}개: "
+            + ', '.join(failed['Ticker'].astype(str).head(10).tolist())
+            + ('...' if len(failed) > 10 else '')
+        )
+
+    st.caption(
+        "💡 **한국 주식**: 네이버 모바일 API (장 시간 중 실시간, 장 마감 후 종가). "
+        "**외국 주식**: yfinance (~15분 지연). "
+        "외화 → KRW 환율은 현재 환율 기준 단순 환산 (전일 환율 변동 효과 미반영). "
+        "캐시 2분 (사이드바 *데이터 새로고침* 또는 페이지 새로고침으로 즉시 갱신)."
+    )
+
+    st.stop()  # 실시간 뷰는 여기서 종료, 일반 뷰 렌더링 스킵
 
 # ---------------------------------------------------------
 # 뷰별 필터
