@@ -341,9 +341,14 @@ if view == "📰 시장 동향":
         st.warning("market_data 시트가 비어있습니다.")
         st.stop()
 
-    # date 컬럼 파싱
+    # date 컬럼 파싱 — 한국 locale ("2020. 1. 1.") 도 처리
     date_col_name = df_market.columns[0]  # 첫 컬럼이 date
-    df_market['_date'] = pd.to_datetime(df_market[date_col_name], errors='coerce')
+    # 1차: 'YYYY. M. D.' / 'YYYY.M.D' 같은 한국식 → 'YYYY-M-D' 로 정규화
+    _date_raw = df_market[date_col_name].astype(str).str.strip()
+    _date_norm = (_date_raw
+                  .str.replace(r'[\.\s/]+', '-', regex=True)
+                  .str.strip('-'))
+    df_market['_date'] = pd.to_datetime(_date_norm, errors='coerce')
     df_market = df_market.dropna(subset=['_date']).sort_values('_date').reset_index(drop=True)
 
     if df_market.empty:
@@ -414,9 +419,8 @@ if view == "📰 시장 동향":
             return None
         if 'bps' in col_name:
             return f"{val:+.1f} bps"
-        # _chg_pct 계열 — 소수(0.0234) vs 퍼센트(2.34) 자동 감지
-        if abs(val) <= 1.5:
-            return f"{val * 100:+.2f}%"
+        # _chg_pct: 시트 정규화 후 항상 퍼센트 형태 (예: -1.38)
+        # 자동감지(<=1.5) 는 -1.38 같은 값을 소수로 오인하는 버그가 있어서 제거.
         return f"{val:+.2f}%"
 
     # ── 카드 섹션 ──
@@ -454,8 +458,8 @@ if view == "📰 시장 동향":
     with cc2:
         time_range = st.selectbox(
             "기간",
-            ["1주", "1달", "3달", "6달", "1년", "전체"],
-            index=2,
+            ["WTD", "1주", "1달", "3달", "6달", "1년", "전체"],
+            index=3,  # 기본 '1달' (WTD 추가로 인덱스 +1)
         )
     with cc3:
         normalize = st.toggle(
@@ -465,12 +469,17 @@ if view == "📰 시장 동향":
         )
 
     # 시간 범위 적용
-    if time_range != "전체":
+    if time_range == "전체":
+        df_chart = df_market.copy()
+    elif time_range == "WTD":
+        # 이번주 월요일부터 (월=0, 일=6)
+        days_since_mon = latest_market_date.weekday()
+        cutoff = latest_market_date - pd.Timedelta(days=days_since_mon)
+        df_chart = df_market[df_market['_date'] >= cutoff]
+    else:
         days_map = {"1주": 7, "1달": 30, "3달": 90, "6달": 180, "1년": 365}
         cutoff = latest_market_date - pd.Timedelta(days=days_map[time_range])
         df_chart = df_market[df_market['_date'] >= cutoff]
-    else:
-        df_chart = df_market.copy()
 
     if df_chart.empty or not selected_indices:
         st.info("기간 내 데이터 없음 또는 지표 미선택")
