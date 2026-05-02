@@ -450,14 +450,14 @@ def fetch_daily_market_data():
     """
     print("\n[Core 5] 일일 시장 지표 수집 시작 (v70.30 - pykrx 추가)...")
     
-    # 1. 37개 열에 맞는 빈 리스트 초기화
-    final_row_data = [""] * 37
+    # 1. 39개 열에 맞는 빈 리스트 초기화 (NIKKEI 2개 추가)
+    final_row_data = [""] * 39
     today = datetime.now()
     final_row_data[0] = today.strftime('%Y-%m-%d') # Date
 
     # --- [A] yfinance 데이터 수집 (기존 로직 유지) ---
     yf_tickers = [
-        '^KS11', '^KQ11', '^GSPC', '^IXIC', '000001.SS', '^GDAXI',
+        '^KS11', '^KQ11', '^GSPC', '^IXIC', '000001.SS', '^N225', '^GDAXI',
         'USDKRW=X', 'DX-Y.NYB', '^TNX', '^TYX', 'CL=F', 'GC=F', 'BTC-USD', '^VIX'
     ]
     base_ticker = yf_tickers[0]
@@ -493,7 +493,7 @@ def fetch_daily_market_data():
                         if ticker in ['^TNX', '^TYX']: chg = (price - p_prev) * 100
                 
                 if type == 'price': return f"{price:.2f}"
-                if type == 'chg': 
+                if type == 'chg':
                     if ticker in ['^TNX', '^TYX']: return f"{chg:.2f}"
                     else: return f"{chg*100:.2f}%"
             except: return "0.00"
@@ -512,26 +512,28 @@ def fetch_daily_market_data():
         final_row_data[8] = get_val('^GSPC', 'chg')
         final_row_data[9] = get_val('^IXIC', 'price')
         final_row_data[10] = get_val('^IXIC', 'chg')
-        final_row_data[11] = get_val('000001.SS', 'price')
-        final_row_data[12] = get_val('000001.SS', 'chg')
-        final_row_data[13] = get_val('^GDAXI', 'price')
-        final_row_data[14] = get_val('^GDAXI', 'chg')
-        final_row_data[15] = get_val('USDKRW=X', 'price')
-        final_row_data[16] = get_val('USDKRW=X', 'chg')
-        final_row_data[17] = get_val('DX-Y.NYB', 'price')
-        final_row_data[18] = get_val('DX-Y.NYB', 'chg')
-        final_row_data[19] = get_val('^TNX', 'price')
-        final_row_data[20] = get_val('^TNX', 'chg')
-        final_row_data[21] = get_val('^TYX', 'price')
-        final_row_data[22] = get_val('^TYX', 'chg')
-        final_row_data[23] = get_val('CL=F', 'price')
-        final_row_data[24] = get_val('CL=F', 'chg')
-        final_row_data[25] = get_val('GC=F', 'price')
-        final_row_data[26] = get_val('GC=F', 'chg')
-        final_row_data[27] = get_val('BTC-USD', 'price')
-        final_row_data[28] = get_val('BTC-USD', 'chg')
-        final_row_data[29] = get_val('^VIX', 'price')
-        final_row_data[30] = get_val('^VIX', 'chg')
+        final_row_data[11] = get_val('000001.SS', 'price')   # SHANGHAI (L)
+        final_row_data[12] = get_val('000001.SS', 'chg')     # SHANGHAI_chg (M)
+        final_row_data[13] = get_val('^N225', 'price')       # NIKKEI (N) — 신규
+        final_row_data[14] = get_val('^N225', 'chg')         # NIKKEI_chg (O) — 신규
+        final_row_data[15] = get_val('^GDAXI', 'price')      # DAX (P) — was [13]
+        final_row_data[16] = get_val('^GDAXI', 'chg')        # DAX_chg (Q) — was [14]
+        final_row_data[17] = get_val('USDKRW=X', 'price')    # USDKRW (R) — was [15]
+        final_row_data[18] = get_val('USDKRW=X', 'chg')      # USDKRW_chg (S) — was [16]
+        final_row_data[19] = get_val('DX-Y.NYB', 'price')    # DXY (T) — was [17]
+        final_row_data[20] = get_val('DX-Y.NYB', 'chg')      # DXY_chg (U) — was [18]
+        final_row_data[21] = get_val('^TNX', 'price')        # TNX (V) — was [19]
+        final_row_data[22] = get_val('^TNX', 'chg')          # TNX_chg (W) — was [20]
+        final_row_data[23] = get_val('^TYX', 'price')        # TYX (X) — was [21]
+        final_row_data[24] = get_val('^TYX', 'chg')          # TYX_chg (Y) — was [22]
+        final_row_data[25] = get_val('CL=F', 'price')        # WTI (Z) — was [23]
+        final_row_data[26] = get_val('CL=F', 'chg')          # WTI_chg (AA) — was [24]
+        final_row_data[27] = get_val('GC=F', 'price')        # GOLD (AB) — was [25]
+        final_row_data[28] = get_val('GC=F', 'chg')          # GOLD_chg (AC) — was [26]
+        final_row_data[29] = get_val('BTC-USD', 'price')     # BTC (AD) — was [27]
+        final_row_data[30] = get_val('BTC-USD', 'chg')       # BTC_chg (AE) — was [28]
+        final_row_data[31] = get_val('^VIX', 'price')        # VIX (AF) — was [29]
+        final_row_data[32] = get_val('^VIX', 'chg')          # VIX_chg (AG) — was [30]
 
     except Exception as e:
         print(f"  [!!!] yfinance 수집 중 오류: {e}")
@@ -583,19 +585,19 @@ def fetch_daily_market_data():
                 prev_credit = df_deposit['신용잔고'].iloc[-2] / 100 if len(df_deposit) >= 2 else curr_credit
 
                 # 데이터 채우기 (소수점 없이 정수 반올림 추천)
-                final_row_data[33] = f"{curr_deposit:.0f}" # 억원
-                
+                final_row_data[35] = f"{curr_deposit:.0f}" # 억원 (was [33])
+
                 dep_chg = 0.0
                 if prev_deposit != 0: dep_chg = (curr_deposit / prev_deposit) - 1
-                final_row_data[34] = f"{dep_chg:.6f}"
+                final_row_data[36] = f"{dep_chg*100:.2f}%"  # was [34]
 
-                final_row_data[35] = f"{curr_credit:.0f}" # 억원
-                
+                final_row_data[37] = f"{curr_credit:.0f}" # 억원 (was [35])
+
                 cred_chg = 0.0
                 if prev_credit != 0: cred_chg = (curr_credit / prev_credit) - 1
-                final_row_data[36] = f"{cred_chg:.6f}"
-                
-                print(f"     [+] 예탁금/신용잔고(억원) 업데이트 완료: 예탁금 {final_row_data[33]}억")
+                final_row_data[38] = f"{cred_chg*100:.2f}%"  # was [36]
+
+                print(f"     [+] 예탁금/신용잔고(억원) 업데이트 완료: 예탁금 {final_row_data[35]}억")
             else:
                 print("     [!] 예탁금 데이터 기간 내 없음.")
 
@@ -605,7 +607,7 @@ def fetch_daily_market_data():
     except Exception as e:
         print(f"  [!!!] pykrx 수집 중 치명적 오류: {e}")
 
-    # [31~32] KR Bond Rate (공란 유지 - 신뢰할 수 있는 무료 소스 없음)
+    # [33~34] KR Bond Rate (공란 유지 - 신뢰할 수 있는 무료 소스 없음)
     
     print("  [Core 5] 데이터 수집 완료 (pykrx 포함).")
     return final_row_data

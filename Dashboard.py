@@ -374,8 +374,9 @@ if view == "📰 시장 동향":
             ('S&P 500', 'SP500_price', 'SP500_chg_pct'),
             ('NASDAQ', 'NASDAQ_price', 'NASDAQ_chg_pct'),
         ]),
-        ("🌏 중국 / 독일", [
+        ("🌏 중국 / 일본 / 독일", [
             ('Shanghai', 'SHANGHAI_price', 'SHANGHAI_chg_pct'),
+            ('Nikkei', 'NIKKEI_price', 'NIKKEI_chg_pct'),
             ('DAX', 'DAX_price', 'DAX_chg_pct'),
         ]),
         ("💱 환율 / 변동성", [
