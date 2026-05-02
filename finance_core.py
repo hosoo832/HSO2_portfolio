@@ -453,7 +453,7 @@ def fetch_daily_market_data():
     # 1. 37개 열에 맞는 빈 리스트 초기화
     final_row_data = [""] * 37
     today = datetime.now()
-    final_row_data[0] = today.strftime('%Y-%m-%d %H:%M:%S') # Date
+    final_row_data[0] = today.strftime('%Y-%m-%d') # Date
 
     # --- [A] yfinance 데이터 수집 (기존 로직 유지) ---
     yf_tickers = [
