@@ -495,7 +495,7 @@ def fetch_daily_market_data():
                 if type == 'price': return f"{price:.2f}"
                 if type == 'chg': 
                     if ticker in ['^TNX', '^TYX']: return f"{chg:.2f}"
-                    else: return f"{chg:.6f}"
+                    else: return f"{chg*100:.2f}%"
             except: return "0.00"
             return "0.00"
 
