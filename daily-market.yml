@@ -1,0 +1,35 @@
+name: Daily Market Data Update
+
+# 트리거:
+#   1) cron — KST 07:00 매일 (UTC 22:00 전날)
+#   2) 수동 — Actions 탭 "Run workflow" 버튼
+on:
+  schedule:
+    - cron: '0 22 * * *'
+  workflow_dispatch:
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run update_market_data.py
+        env:
+          GCP_SA_JSON: ${{ secrets.GCP_SA_JSON }}
+          ECOS_API_KEY: ${{ secrets.ECOS_API_KEY }}
+        run: python update_market_data.py

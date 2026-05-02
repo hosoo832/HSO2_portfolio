@@ -84,38 +84,43 @@ def run_backfill():
         
         print("     [yfinance] 글로벌 지표 가공 완료.")
 
-        # --- 4. [pykrx] 국내 거래대금 일괄 다운로드 (v70.30) ---
-        print(f"\n[BACKFILL] 2. pykrx 국내 거래대금 수집 중 ({START_DATE} ~ {END_DATE})...")
-        
-        # pykrx 날짜 포맷 (YYYYMMDD)
+        # --- 4. [v70.33] pykrx 비활성, ECOS API 로 대체 ---
+        # pykrx 1.0.51 의 깨진 인덱스 OHLCV / 삭제된 deposit API 우회
+
         str_start = START_DATE.replace("-", "")
         str_end = END_DATE.replace("-", "")
-        
+
+        df_pykrx = pd.DataFrame()  # 비활성 (deprecated)
+
+        # --- ECOS 데이터 수집 (KR 10Y 금리 + KOSPI/KOSDAQ 거래대금) ---
+        print(f"\n[BACKFILL] 2-NEW. ECOS API 데이터 수집 중 ({START_DATE} ~ {END_DATE})...")
+        df_ecos = pd.DataFrame()
         try:
-            # KOSPI (1001), KOSDAQ (2001) OHLCV 조회
-            df_kospi_ohlcv = stock.get_index_ohlcv_by_date(str_start, str_end, "1001")
-            df_kosdaq_ohlcv = stock.get_index_ohlcv_by_date(str_start, str_end, "2001")
-            
-            # 거래대금 추출 및 억원 단위 환산 (/ 1억)
-            # (만약 거래일이 yfinance와 다를 수 있으므로 별도 DF 생성 후 병합)
-            df_pykrx = pd.DataFrame(index=df_kospi_ohlcv.index)
-            
-            # [중요] '거래량' 컬럼에 '거래대금(억원)'을 넣습니다.
-            if '거래대금' in df_kospi_ohlcv.columns:
-                df_pykrx['KOSPI_volume'] = (df_kospi_ohlcv['거래대금'] / 100000000).astype(int)
+            import os
+            import ecos_helpers
+            ecos_key = os.environ.get('ECOS_API_KEY')
+            if not ecos_key:
+                print("     [!!!] ECOS_API_KEY 환경변수 없음. ECOS 데이터 스킵.")
             else:
-                df_pykrx['KOSPI_volume'] = 0
-                
-            if '거래대금' in df_kosdaq_ohlcv.columns:
-                df_pykrx['KOSDAQ_volume'] = (df_kosdaq_ohlcv['거래대금'] / 100000000).astype(int)
-            else:
-                df_pykrx['KOSDAQ_volume'] = 0
-                
-            print("     [pykrx] 거래대금(억원) 수집 완료.")
-            
+                df_ecos = ecos_helpers.fetch_all_history(str_start, str_end, api_key=ecos_key)
+                if not df_ecos.empty:
+                    print(f"     [ECOS] 통합 결과 shape={df_ecos.shape}")
+                    # 정수 변환 — 거래대금은 억원 단위 정수
+                    if 'KOSPI_volume' in df_ecos.columns:
+                        df_ecos['KOSPI_volume'] = df_ecos['KOSPI_volume'].round(0).astype('Int64')
+                    if 'KOSDAQ_volume' in df_ecos.columns:
+                        df_ecos['KOSDAQ_volume'] = df_ecos['KOSDAQ_volume'].round(0).astype('Int64')
+                    # KR 10Y chg_bps 사전 계산 (yfinance 와 동일한 방식)
+                    if 'KR_10Y_Bond_rate' in df_ecos.columns:
+                        df_ecos['KR_10Y_Bond_chg_bps'] = df_ecos['KR_10Y_Bond_rate'].diff() * 100
+                else:
+                    print("     [!] ECOS 빈 결과")
         except Exception as e:
-            print(f"     [!!!] pykrx 수집 실패 ({e}). 거래대금은 0으로 설정됩니다.")
-            df_pykrx = pd.DataFrame() # 빈 DF
+            print(f"     [!!!] ECOS 수집 실패: {e}")
+            import traceback; traceback.print_exc()
+
+        # 고객예탁금/신용잔고는 ECOS/BOK 미제공 → 빈칸 유지
+        df_deposit = pd.DataFrame()
 
         # --- 5. 데이터 최종 병합 및 후처리 ---
         print("\n[BACKFILL] 3. 데이터 최종 병합 및 후처리 중...")
@@ -124,9 +129,13 @@ def run_backfill():
         df_yf.index = pd.to_datetime(df_yf.index).date
         if not df_pykrx.empty:
             df_pykrx.index = pd.to_datetime(df_pykrx.index).date
+        if not df_deposit.empty:
+            df_deposit.index = pd.to_datetime(df_deposit.index).date
+        if not df_ecos.empty:
+            df_ecos.index = pd.to_datetime(df_ecos.index).date
 
         # 병합 (Outer Join으로 날짜 합집합)
-        df_final = pd.concat([df_yf, df_pykrx], axis=1)
+        df_final = pd.concat([df_yf, df_pykrx, df_deposit, df_ecos], axis=1)
         
         # 1. 휴장일 처리 (가격): 직전일 값으로 채우기 (ffill)
         # (거래대금인 Volume은 ffill하지 않고 0으로 두는 게 일반적이나, 
@@ -135,7 +144,8 @@ def run_backfill():
             'KOSPI_price', 'KOSDAQ_price', 'SP500_price', 'NASDAQ_price',
             'SHANGHAI_price', 'NIKKEI_price', 'DAX_price', 'USDKRW_price', 'USD_IDX_price',
             'US_10Y_Bond_rate', 'US_30Y_Bond_rate', 'WTI_price', 'GOLD_price',
-            'BTC_price', 'VIX_price'
+            'BTC_price', 'VIX_price',
+            'Customer_Deposit_value', 'Credit_Balance_value'  # v70.31: 자금흐름도 ffill
         ]
         cols_to_ffill = [col for col in value_cols if col in df_final.columns]
         df_final[cols_to_ffill] = df_final[cols_to_ffill].ffill()
@@ -154,23 +164,27 @@ def run_backfill():
         df_final['GOLD_chg_pct'] = df_final['GOLD_price'].pct_change()
         df_final['BTC_chg_pct'] = df_final['BTC_price'].pct_change()
         df_final['VIX_chg_pct'] = df_final['VIX_price'].pct_change()
-        
+
         df_final['US_10Y_Bond_chg_bps'] = df_final['US_10Y_Bond_rate'].diff() * 100
         df_final['US_30Y_Bond_chg_bps'] = df_final['US_30Y_Bond_rate'].diff() * 100
-        
+
+        # v70.31: 자금흐름 등락률 계산
+        if 'Customer_Deposit_value' in df_final.columns:
+            df_final['Customer_Deposit_chg_pct'] = df_final['Customer_Deposit_value'].pct_change()
+        if 'Credit_Balance_value' in df_final.columns:
+            df_final['Credit_Balance_chg_pct'] = df_final['Credit_Balance_value'].pct_change()
+
         # 3. 등락률 NaN -> 0
         chg_cols = [col for col in df_final.columns if col.endswith(('_pct', '_bps'))]
         df_final[chg_cols] = df_final[chg_cols].fillna(0)
-        
+
         # 4. date 컬럼 생성
         df_final['date'] = pd.to_datetime(df_final.index).strftime('%Y-%m-%d')
-        
-        # 5. [v70.30] 포기한 데이터들 빈칸("") 처리
-        # (KR Bond, Customer Deposit, Credit Balance)
+
+        # 5. [v70.33] ECOS/BOK 미제공 — 고객예탁금/신용잔고만 빈칸
         cols_to_empty = [
-            "KR_10Y_Bond_rate", "KR_10Y_Bond_chg_bps",
             "Customer_Deposit_value", "Customer_Deposit_chg_pct",
-            "Credit_Balance_value", "Credit_Balance_chg_pct"
+            "Credit_Balance_value", "Credit_Balance_chg_pct",
         ]
         for col in cols_to_empty:
             df_final[col] = ""

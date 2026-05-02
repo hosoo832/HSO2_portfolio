@@ -1,6 +1,7 @@
 # --- 4. 재무 계산 엔진: 보유 현황, 손익, 현재가, 현금 계산 ---
 # v75: 사용자 원본(v70.25) 유지 + 샤오펑/미국주식 패치 적용
 
+import os
 import pandas as pd
 import numpy as np
 from pykrx import stock # [엔진 1]에서 사용
@@ -542,75 +543,42 @@ def fetch_daily_market_data():
         print(f"  [!!!] yfinance 수집 중 오류: {e}")
         # 오류 나도 pykrx 시도 위해 return하지 않고 진행
 
-    # --- [B] pykrx 데이터 수집 (거래대금, 예탁금, 신용잔고) ---
-    print("  [Core 5-B] pykrx 데이터 수집 중 (거래대금/예탁금/신용잔고)...")
+    # --- [B] pykrx 비활성 (v70.32) — pykrx 1.0.51 의 깨진 인덱스 OHLCV / 삭제된 deposit API ---
+    # KOSPI/KOSDAQ_volume, KR Bond → ECOS 로 이전 (아래 [C])
+    # 고객예탁금 / 신용잔고 → ECOS/BOK 비제공, 빈칸 유지 ([35~38])
+
+    # --- [C] ECOS API 데이터 수집 (v70.33) ---
+    # KR 10Y 국고채 금리 + KOSPI/KOSDAQ 거래대금 (억원)
+    print("  [Core 5-C] ECOS 데이터 수집 중 (KR 10Y 금리 + 거래대금)...")
     try:
-        # 날짜 설정: 오늘 새벽 실행 -> 어제 마감 데이터 필요
-        yesterday = today - timedelta(days=1)
-        week_ago = today - timedelta(days=8)
-        
-        str_yesterday = yesterday.strftime("%Y%m%d")
-        str_week_ago = week_ago.strftime("%Y%m%d")
+        import ecos_helpers
+        ecos_key = os.environ.get('ECOS_API_KEY')
+        if not ecos_key:
+            print("     [!] ECOS_API_KEY 환경변수 없음 — ECOS 컬럼은 빈칸")
+        else:
+            # KOSPI 거래대금 (억원) → [3]
+            v_now, _ = ecos_helpers.fetch_latest_two('KOSPI_volume', api_key=ecos_key)
+            if v_now is not None:
+                final_row_data[3] = f"{int(v_now)}"
 
-        # 1. KOSPI / KOSDAQ 거래대금 (Value)
-        # 지수 티커: KOSPI='1001', KOSDAQ='2001'
-        try:
-            # 기간 조회 후 마지막 값 사용
-            df_kospi_vol = stock.get_index_ohlcv_by_date(str_week_ago, str_yesterday, "1001")
-            df_kosdaq_vol = stock.get_index_ohlcv_by_date(str_week_ago, str_yesterday, "2001")
+            # KOSDAQ 거래대금 (억원) → [6]
+            v_now, _ = ecos_helpers.fetch_latest_two('KOSDAQ_volume', api_key=ecos_key)
+            if v_now is not None:
+                final_row_data[6] = f"{int(v_now)}"
 
-            if not df_kospi_vol.empty:
-                # [수정] '거래량' -> '거래대금' 변경 및 단위 환산 (원 -> 억원)
-                last_val_kospi = df_kospi_vol['거래대금'].iloc[-1]
-                val_kospi_100m = last_val_kospi / 100000000 # 1억으로 나누기
-                final_row_data[3] = f"{val_kospi_100m:.0f}" # 소수점 없이 정수만 (HTS 스타일)
-            
-            if not df_kosdaq_vol.empty:
-                last_val_kosdaq = df_kosdaq_vol['거래대금'].iloc[-1]
-                val_kosdaq_100m = last_val_kosdaq / 100000000 # 1억으로 나누기
-                final_row_data[6] = f"{val_kosdaq_100m:.0f}" # 소수점 없이 정수만
-                
-            print(f"     [+] 거래대금(억원) 업데이트 완료: KOSPI {final_row_data[3]}억, KOSDAQ {final_row_data[6]}억")
-            
-        except Exception as e:
-            print(f"     [!] 거래대금 조회 실패: {e}")
+            # KR 10Y Bond rate (연%) → [33], chg_bps → [34]
+            r_now, r_prev = ecos_helpers.fetch_latest_two('KR_10Y_Bond_rate', api_key=ecos_key)
+            if r_now is not None:
+                final_row_data[33] = f"{r_now:.2f}"
+                if r_prev is not None:
+                    chg_bps = (r_now - r_prev) * 100
+                    final_row_data[34] = f"{chg_bps:.2f}"
 
-        # 2. 예탁금 & 신용잔고 (억원 단위로 변환)
-        try:
-            df_deposit = stock.get_customer_deposit_trend(str_week_ago, str_yesterday)
-            
-            if not df_deposit.empty and len(df_deposit) >= 1:
-                # 원본(백만원) -> 억원 변환 (나누기 100)
-                curr_deposit = df_deposit['고객예탁금'].iloc[-1] / 100
-                curr_credit = df_deposit['신용잔고'].iloc[-1] / 100
-                
-                prev_deposit = df_deposit['고객예탁금'].iloc[-2] / 100 if len(df_deposit) >= 2 else curr_deposit
-                prev_credit = df_deposit['신용잔고'].iloc[-2] / 100 if len(df_deposit) >= 2 else curr_credit
-
-                # 데이터 채우기 (소수점 없이 정수 반올림 추천)
-                final_row_data[35] = f"{curr_deposit:.0f}" # 억원 (was [33])
-
-                dep_chg = 0.0
-                if prev_deposit != 0: dep_chg = (curr_deposit / prev_deposit) - 1
-                final_row_data[36] = f"{dep_chg*100:.2f}%"  # was [34]
-
-                final_row_data[37] = f"{curr_credit:.0f}" # 억원 (was [35])
-
-                cred_chg = 0.0
-                if prev_credit != 0: cred_chg = (curr_credit / prev_credit) - 1
-                final_row_data[38] = f"{cred_chg*100:.2f}%"  # was [36]
-
-                print(f"     [+] 예탁금/신용잔고(억원) 업데이트 완료: 예탁금 {final_row_data[35]}억")
-            else:
-                print("     [!] 예탁금 데이터 기간 내 없음.")
-
-        except Exception as e:
-             print(f"     [!] 예탁금/신용잔고 조회 실패: {e}")
-
+            print(f"     [+] ECOS 수집: KOSPI={final_row_data[3]}억, KOSDAQ={final_row_data[6]}억, KR10Y={final_row_data[33]}%")
     except Exception as e:
-        print(f"  [!!!] pykrx 수집 중 치명적 오류: {e}")
+        print(f"     [!!!] ECOS 수집 중 오류: {e}")
 
-    # [33~34] KR Bond Rate (공란 유지 - 신뢰할 수 있는 무료 소스 없음)
+    # [35~38] Customer_Deposit / Credit_Balance — ECOS/BOK 비제공으로 빈칸 유지
     
     print("  [Core 5] 데이터 수집 완료 (pykrx 포함).")
     return final_row_data
