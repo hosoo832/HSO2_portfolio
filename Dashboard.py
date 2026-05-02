@@ -461,8 +461,8 @@ if view == "📰 시장 동향":
     with cc2:
         time_range = st.selectbox(
             "기간",
-            ["WTD", "YTD", "1주", "1달", "3달", "6달", "1년", "전체"],
-            index=4,  # 기본 '3달'
+            ["WTD", "MTD", "QTD", "YTD", "1주", "1달", "3달", "6달", "1년", "전체"],
+            index=6,  # 기본 '3달'
         )
     with cc3:
         normalize = st.toggle(
@@ -478,6 +478,17 @@ if view == "📰 시장 동향":
         # 이번주 월요일부터 (월=0, 일=6)
         days_since_mon = latest_market_date.weekday()
         cutoff = latest_market_date - pd.Timedelta(days=days_since_mon)
+        df_chart = df_market[df_market['_date'] >= cutoff]
+    elif time_range == "MTD":
+        # 이번 달 1일부터
+        cutoff = pd.Timestamp(year=latest_market_date.year,
+                              month=latest_market_date.month, day=1)
+        df_chart = df_market[df_market['_date'] >= cutoff]
+    elif time_range == "QTD":
+        # 이번 분기 첫 달 1일부터 (Q1=1월, Q2=4월, Q3=7월, Q4=10월)
+        q_start_month = ((latest_market_date.month - 1) // 3) * 3 + 1
+        cutoff = pd.Timestamp(year=latest_market_date.year,
+                              month=q_start_month, day=1)
         df_chart = df_market[df_market['_date'] >= cutoff]
     elif time_range == "YTD":
         # 올해 1월 1일부터
