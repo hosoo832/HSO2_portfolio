@@ -344,12 +344,23 @@ if view == "📰 시장 동향":
     # date 컬럼 파싱 — 한국 locale ("2020. 1. 1.") 도 처리
     date_col_name = df_market.columns[0]  # 첫 컬럼이 date
     # 1차: 'YYYY. M. D.' / 'YYYY.M.D' 같은 한국식 → 'YYYY-M-D' 로 정규화
+    _raw_total = len(df_market)
     _date_raw = df_market[date_col_name].astype(str).str.strip()
     _date_norm = (_date_raw
                   .str.replace(r'[\.\s/]+', '-', regex=True)
                   .str.strip('-'))
     df_market['_date'] = pd.to_datetime(_date_norm, errors='coerce')
+    _parsed = df_market['_date'].notna().sum()
     df_market = df_market.dropna(subset=['_date']).sort_values('_date').reset_index(drop=True)
+
+    # === 디버그: 시트 행 수 vs 파싱 성공 vs 실제 날짜 범위 ===
+    if not df_market.empty:
+        st.caption(
+            f"🐛 디버그 — 시트 총 {_raw_total}행 / date 파싱 성공 {_parsed}행 / "
+            f"범위: {df_market['_date'].min().strftime('%Y-%m-%d')} ~ "
+            f"{df_market['_date'].max().strftime('%Y-%m-%d')} / "
+            f"date 원본 sample (처음 3개): {list(_date_raw.head(3))}"
+        )
 
     if df_market.empty:
         st.warning("유효한 날짜 데이터가 없습니다.")
