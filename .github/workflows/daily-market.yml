@@ -28,4 +28,5 @@ jobs:
       - name: Run update_market_data.py
         env:
           GCP_SA_JSON: ${{ secrets.GCP_SA_JSON }}
+          ECOS_API_KEY: ${{ secrets.ECOS_API_KEY }}
         run: python update_market_data.py
