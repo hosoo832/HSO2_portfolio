@@ -502,6 +502,12 @@ if view == "📰 시장 동향":
     if df_chart.empty or not selected_indices:
         st.info("기간 내 데이터 없음 또는 지표 미선택")
     else:
+        # 데이터가 너무 적으면 안내
+        if len(df_chart) < 5:
+            st.info(
+                f"📌 '{time_range}' 기간의 거래일 데이터가 **{len(df_chart)}개** 뿐입니다. "
+                f"월/분기/년 초반에 흔한 현상 — 더 긴 추세를 보려면 1달/3달/1년 옵션을 사용해보세요."
+            )
         fig_market = go.Figure()
         for idx_label in selected_indices:
             col = label_to_col.get(idx_label)
@@ -538,7 +544,11 @@ if view == "📰 시장 동향":
                 tickfont=dict(size=11),
                 gridcolor='#eeeeee',
             ),
-            xaxis=dict(tickfont=dict(size=11)),
+            xaxis=dict(
+                tickfont=dict(size=11),
+                tickformat='%Y-%m-%d',  # 항상 날짜 형식 (시간 단위 자동스케일 방지)
+                type='date',
+            ),
             legend=dict(
                 orientation='h', yanchor='top', y=1.10,
                 xanchor='center', x=0.5, font=dict(size=12),
