@@ -5,3 +5,6 @@ gspread>=6.0
 google-auth>=2.27
 yfinance>=0.2.40
 requests>=2.31
+numpy>=1.26
+pykrx>=1.0.45
+beautifulsoup4>=4.12
