@@ -482,16 +482,19 @@ def fetch_daily_market_data():
         def get_val(ticker, type='price'):
             try:
                 price = 0.0; chg = 0.0
-                if ('Close', ticker) in target_row.index:
-                    price = target_row[('Close', ticker)]
-                    if pd.isna(price): price = 0.0
-                
-                if ('Close', ticker) in prev_row.index:
-                    p_prev = prev_row[('Close', ticker)]
-                    if price != 0 and p_prev != 0:
-                        chg = (price / p_prev) - 1
-                        if ticker in ['^TNX', '^TYX']: chg = (price - p_prev) * 100
-                
+                # 티커별 시계열에서 NaN 제거 후 마지막 2개 유효값 사용 (휴장일 갭 자동 건너뜀)
+                if ('Close', ticker) in data.columns:
+                    series = data[('Close', ticker)].dropna()
+                    if not series.empty:
+                        price = float(series.iloc[-1])
+                        if len(series) >= 2:
+                            p_prev = float(series.iloc[-2])
+                            if price != 0 and p_prev != 0:
+                                if ticker in ['^TNX', '^TYX']:
+                                    chg = (price - p_prev) * 100
+                                else:
+                                    chg = (price / p_prev) - 1
+
                 if type == 'price': return f"{price:.2f}"
                 if type == 'chg':
                     if ticker in ['^TNX', '^TYX']: return f"{chg:.2f}"
