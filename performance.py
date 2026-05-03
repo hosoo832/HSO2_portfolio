@@ -201,6 +201,11 @@ def run_performance_analysis():
         
         if not df_market.empty:
             df_market = df_market.sort_values('date').set_index('date')
+            # 중복 date 인덱스 제거 (cron 과 backfill 이 같은 날짜에 행 추가하면 dup 발생)
+            dup_count = df_market.index.duplicated().sum()
+            if dup_count > 0:
+                print(f"  [Warn] market_data 에 중복 date {dup_count}건 발견 → 마지막 행만 유지")
+                df_market = df_market[~df_market.index.duplicated(keep='last')]
             for col in df_market.columns: df_market[col] = df_market[col].apply(safe_float)
             has_market_data = True
 
