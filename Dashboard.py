@@ -1178,7 +1178,109 @@ else:
 - ₩ 수치는 *"감 잡기"* 용 참고치
 """)
 
-# [블록 2] 비중 도넛 → 블록 4 (벤치마크) 아래로 이동됨 (v75.x reorder)
+st.divider()
+
+# ---------------------------------------------------------
+# [블록 4] 벤치마크 비교 (v75.x reorder: KPI 진행 아래로 이동)
+# ---------------------------------------------------------
+st.subheader("🆚 벤치마크 비교")
+
+BM_LABELS = ['2026 MAIN BM', 'KOSPI', 'KOSDAQ', 'Shanghai', 'S&P 500', 'NASDAQ']
+
+# 비교 가능한 기간 후보 (df_perf 컬럼에 있는 것만 노출)
+period_candidates = [
+    '1일', 'WTD(이번주)', 'W-1(저번주)', 'MTD(이번달)', 'M-1(지난달)', 'M-2(2달전)',
+    'YTD', '누적수익률(%)', '지정(25-05-14~)', '지정(25-07-21~)',
+]
+period_options = [p for p in period_candidates if not df_perf.empty and p in df_perf.columns]
+
+if not period_options:
+    st.info("비교 가능한 기간 컬럼이 없습니다")
+else:
+    # 기본값: MTD 가 있으면 그걸로
+    default_idx = period_options.index('MTD(이번달)') if 'MTD(이번달)' in period_options else 0
+    bm_period = st.selectbox(
+        "📅 비교 기간 선택",
+        period_options,
+        index=default_idx,
+        help=(
+            "벤치마크 구성:\n"
+            "• 2026 MAIN BM = KOSPI 37.5% + S&P 500 37.5% + Shanghai 25% (호섭님 자산배분 기준 가중 글로벌 BM)\n"
+            "• KOSPI / KOSDAQ / Shanghai / S&P 500 / NASDAQ = 각 지수 단독\n\n"
+            "수익률은 모두 같은 기간의 단순 가격 변화율"
+        ),
+    )
+
+    # 데이터 빌드: 내 포폴 + 6개 벤치마크
+    bm_data = []
+    me_val = get_perf_pct(bm_period)
+    bm_data.append({
+        '대상': f'내 포폴 ({view})',
+        '수익률': me_val if me_val is not None else 0,
+        '있음': me_val is not None,
+        'is_me': True,
+    })
+    for bm in BM_LABELS:
+        v = get_bm_pct(bm, bm_period)
+        bm_data.append({
+            '대상': bm,
+            '수익률': v if v is not None else 0,
+            '있음': v is not None,
+            'is_me': False,
+        })
+
+    # 색상: 내 포폴=파랑(강조), BM 양수=초록, BM 음수=빨강, 데이터없음=회색
+    bm_colors = []
+    for d in bm_data:
+        if not d['있음']:
+            bm_colors.append('#bdbdbd')
+        elif d['is_me']:
+            bm_colors.append('#1976d2')  # 강조
+        elif d['수익률'] >= 0:
+            bm_colors.append('#2e7d32')
+        else:
+            bm_colors.append('#c62828')
+
+    text_labels_bm = [
+        f"{d['수익률']:+.2f}%" if d['있음'] else '-'
+        for d in bm_data
+    ]
+
+    fig_bm = go.Figure(go.Bar(
+        x=[d['대상'] for d in bm_data],
+        y=[d['수익률'] for d in bm_data],
+        marker_color=bm_colors,
+        text=text_labels_bm,
+        textposition='outside',
+        textfont=dict(size=14, color='#222'),
+        cliponaxis=False,
+        hovertemplate='<b>%{x}</b><br>%{text}<extra></extra>',
+    ))
+    fig_bm.add_hline(y=0, line_color='gray', line_width=1)
+    fig_bm.update_layout(
+        height=400,
+        margin=dict(l=40, r=20, t=20, b=80),
+        showlegend=False,
+        font=dict(size=14, family='sans-serif'),
+        yaxis=dict(
+            title=dict(text="수익률 (%)", font=dict(size=15)),
+            tickfont=dict(size=13),
+            gridcolor='#eeeeee',
+        ),
+        xaxis=dict(
+            title="",
+            tickfont=dict(size=14),
+            tickangle=-15,
+        ),
+        bargap=0.3,
+    )
+    st.plotly_chart(fig_bm, use_container_width=True)
+    st.caption(
+        "💡 **2026 MAIN BM** = KOSPI 37.5% + S&P 500 37.5% + Shanghai 25% "
+        "(2026년 자산배분 가중치 기준). 자산배분이 바뀌면 새 연도 BM 추가 가능."
+    )
+
+st.divider()
 
 # ---------------------------------------------------------
 # [블록 3] 단기 수익률 + 손익 표
@@ -1340,109 +1442,105 @@ else:
 st.divider()
 
 # ---------------------------------------------------------
-# [블록 4] 벤치마크 비교
+# [블록 7] 월별 / 분기별 수익률 (v75.x reorder: 단기 손익 아래로 이동)
+# performance_summary 시트에 자동 생성된 월/분기 컬럼 surface
 # ---------------------------------------------------------
-st.subheader("🆚 벤치마크 비교")
+st.subheader("📅 월별 / 분기별 수익률")
 
-BM_LABELS = ['2026 MAIN BM', 'KOSPI', 'KOSDAQ', 'Shanghai', 'S&P 500', 'NASDAQ']
-
-# 비교 가능한 기간 후보 (df_perf 컬럼에 있는 것만 노출)
-period_candidates = [
-    '1일', 'WTD(이번주)', 'W-1(저번주)', 'MTD(이번달)', 'M-1(지난달)', 'M-2(2달전)',
-    'YTD', '누적수익률(%)', '지정(25-05-14~)', '지정(25-07-21~)',
-]
-period_options = [p for p in period_candidates if not df_perf.empty and p in df_perf.columns]
-
-if not period_options:
-    st.info("비교 가능한 기간 컬럼이 없습니다")
+if perf_row is None:
+    st.info(f"performance_summary 시트에서 '{perf_label}' 행을 못 찾아 표시 불가")
 else:
-    # 기본값: MTD 가 있으면 그걸로
-    default_idx = period_options.index('MTD(이번달)') if 'MTD(이번달)' in period_options else 0
-    bm_period = st.selectbox(
-        "📅 비교 기간 선택",
-        period_options,
-        index=default_idx,
-        help=(
-            "벤치마크 구성:\n"
-            "• 2026 MAIN BM = KOSPI 37.5% + S&P 500 37.5% + Shanghai 25% (호섭님 자산배분 기준 가중 글로벌 BM)\n"
-            "• KOSPI / KOSDAQ / Shanghai / S&P 500 / NASDAQ = 각 지수 단독\n\n"
-            "수익률은 모두 같은 기간의 단순 가격 변화율"
-        ),
-    )
+    # 사용 가능한 월/분기 컬럼 자동 검색 (패턴 매칭)
+    month_cols = sorted([c for c in df_perf.columns if re.match(r'^\d{4}-\d{2}$', str(c))])
+    quarter_cols = sorted([c for c in df_perf.columns if re.match(r'^\d{4}-Q\d$', str(c))])
 
-    # 데이터 빌드: 내 포폴 + 6개 벤치마크
-    bm_data = []
-    me_val = get_perf_pct(bm_period)
-    bm_data.append({
-        '대상': f'내 포폴 ({view})',
-        '수익률': me_val if me_val is not None else 0,
-        '있음': me_val is not None,
-        'is_me': True,
-    })
-    for bm in BM_LABELS:
-        v = get_bm_pct(bm, bm_period)
-        bm_data.append({
-            '대상': bm,
-            '수익률': v if v is not None else 0,
-            '있음': v is not None,
-            'is_me': False,
-        })
+    if not month_cols and not quarter_cols:
+        st.info("월별/분기별 컬럼이 performance_summary 에 없음 (performance.py 최신 버전 실행 필요)")
+    else:
+        def render_period_chart(period_cols, label):
+            if not period_cols:
+                st.info(f"{label} 데이터 없음")
+                return
 
-    # 색상: 내 포폴=파랑(강조), BM 양수=초록, BM 음수=빨강, 데이터없음=회색
-    bm_colors = []
-    for d in bm_data:
-        if not d['있음']:
-            bm_colors.append('#bdbdbd')
-        elif d['is_me']:
-            bm_colors.append('#1976d2')  # 강조
-        elif d['수익률'] >= 0:
-            bm_colors.append('#2e7d32')
-        else:
-            bm_colors.append('#c62828')
+            twr_vals = [get_perf_pct(c) if get_perf_pct(c) is not None else 0 for c in period_cols]
+            mwr_vals = [get_perf_pct(f'MWR_{c}') if get_perf_pct(f'MWR_{c}') is not None else 0 for c in period_cols]
+            pl_vals = [get_perf_raw(f'손익_{c}') if get_perf_raw(f'손익_{c}') is not None else 0 for c in period_cols]
 
-    text_labels_bm = [
-        f"{d['수익률']:+.2f}%" if d['있음'] else '-'
-        for d in bm_data
-    ]
+            # 차트 1: TWR + MWR 그룹 막대
+            fig_ret = go.Figure()
+            fig_ret.add_trace(go.Bar(
+                name='TWR',
+                x=period_cols,
+                y=twr_vals,
+                marker_color='#1976d2',
+                text=[f'{v:+.1f}%' for v in twr_vals],
+                textposition='outside',
+                textfont=dict(size=11),
+            ))
+            fig_ret.add_trace(go.Bar(
+                name='MWR',
+                x=period_cols,
+                y=mwr_vals,
+                marker_color='#fb8c00',
+                text=[f'{v:+.1f}%' for v in mwr_vals],
+                textposition='outside',
+                textfont=dict(size=11),
+            ))
+            fig_ret.add_hline(y=0, line_color='gray', line_width=1)
+            fig_ret.update_layout(
+                barmode='group',
+                title=dict(text=f'{label} 수익률 — TWR / MWR (%)', font=dict(size=15)),
+                height=380,
+                margin=dict(l=20, r=20, t=60, b=50),
+                legend=dict(orientation='h', yanchor='top', y=1.08, xanchor='center', x=0.5,
+                            font=dict(size=13)),
+                font=dict(size=13, family='sans-serif'),
+                yaxis=dict(title='수익률 (%)', tickfont=dict(size=11), gridcolor='#eeeeee'),
+                xaxis=dict(tickfont=dict(size=12), tickangle=-30),
+                bargap=0.2,
+                bargroupgap=0.08,
+                plot_bgcolor='white',
+            )
+            st.plotly_chart(fig_ret, use_container_width=True)
 
-    fig_bm = go.Figure(go.Bar(
-        x=[d['대상'] for d in bm_data],
-        y=[d['수익률'] for d in bm_data],
-        marker_color=bm_colors,
-        text=text_labels_bm,
-        textposition='outside',
-        textfont=dict(size=14, color='#222'),
-        cliponaxis=False,
-        hovertemplate='<b>%{x}</b><br>%{text}<extra></extra>',
-    ))
-    fig_bm.add_hline(y=0, line_color='gray', line_width=1)
-    fig_bm.update_layout(
-        height=400,
-        margin=dict(l=40, r=20, t=20, b=80),
-        showlegend=False,
-        font=dict(size=14, family='sans-serif'),
-        yaxis=dict(
-            title=dict(text="수익률 (%)", font=dict(size=15)),
-            tickfont=dict(size=13),
-            gridcolor='#eeeeee',
-        ),
-        xaxis=dict(
-            title="",
-            tickfont=dict(size=14),
-            tickangle=-15,
-        ),
-        bargap=0.3,
-    )
-    st.plotly_chart(fig_bm, use_container_width=True)
-    st.caption(
-        "💡 **2026 MAIN BM** = KOSPI 37.5% + S&P 500 37.5% + Shanghai 25% "
-        "(2026년 자산배분 가중치 기준). 자산배분이 바뀌면 새 연도 BM 추가 가능."
-    )
+            # 차트 2: 손익 (KRW) — 양수=초록, 음수=빨강
+            colors = ['#2e7d32' if v >= 0 else '#c62828' for v in pl_vals]
+            fig_pl = go.Figure(go.Bar(
+                x=period_cols,
+                y=pl_vals,
+                marker_color=colors,
+                text=[f'₩{v:+,.0f}' for v in pl_vals],
+                textposition='outside',
+                textfont=dict(size=10),
+                cliponaxis=False,
+            ))
+            fig_pl.add_hline(y=0, line_color='gray', line_width=1)
+            fig_pl.update_layout(
+                title=dict(text=f'{label} 손익 (KRW)', font=dict(size=15)),
+                height=320,
+                margin=dict(l=20, r=20, t=50, b=50),
+                showlegend=False,
+                font=dict(size=13, family='sans-serif'),
+                yaxis=dict(title='손익 (₩)', tickfont=dict(size=11), gridcolor='#eeeeee'),
+                xaxis=dict(tickfont=dict(size=12), tickangle=-30),
+                bargap=0.3,
+                plot_bgcolor='white',
+            )
+            st.plotly_chart(fig_pl, use_container_width=True)
+
+        tab_m, tab_q = st.tabs([
+            f"📊 월별 ({len(month_cols)}개월)",
+            f"📊 분기별 ({len(quarter_cols)}개 분기)",
+        ])
+        with tab_m:
+            render_period_chart(month_cols, '월별')
+        with tab_q:
+            render_period_chart(quarter_cols, '분기별')
 
 st.divider()
 
 # ---------------------------------------------------------
-# [블록 2] 비중 도넛 3개 (BM 비교 아래로 이동 v75.x)
+# [블록 2] 비중 도넛 3개 (성과 섹션 아래로 v75.x reorder)
 # ---------------------------------------------------------
 st.subheader("🥧 비중")
 
@@ -2133,103 +2231,6 @@ if view in ("멘토 포폴", "HS 포폴"):
                     "**괴리율** = 목표비중 − 현재비중 (퍼센트 포인트). 🔵 +면 매수 압력, 🟠 −면 매도 압력.  "
                     "**리밸런싱 금액** = 목표 평가액 − 현재 평가액 (양수=매수, 음수=매도)"
                 )
-
-# ---------------------------------------------------------
-# [블록 7] 월별 / 분기별 수익률 (모든 뷰 공통, 가장 하단)
-# performance_summary 시트에 자동 생성된 월/분기 컬럼 surface
-# ---------------------------------------------------------
-st.divider()
-st.subheader("📅 월별 / 분기별 수익률")
-
-if perf_row is None:
-    st.info(f"performance_summary 시트에서 '{perf_label}' 행을 못 찾아 표시 불가")
-else:
-    # 사용 가능한 월/분기 컬럼 자동 검색 (패턴 매칭)
-    month_cols = sorted([c for c in df_perf.columns if re.match(r'^\d{4}-\d{2}$', str(c))])
-    quarter_cols = sorted([c for c in df_perf.columns if re.match(r'^\d{4}-Q\d$', str(c))])
-
-    if not month_cols and not quarter_cols:
-        st.info("월별/분기별 컬럼이 performance_summary 에 없음 (performance.py 최신 버전 실행 필요)")
-    else:
-        def render_period_chart(period_cols, label):
-            if not period_cols:
-                st.info(f"{label} 데이터 없음")
-                return
-
-            twr_vals = [get_perf_pct(c) if get_perf_pct(c) is not None else 0 for c in period_cols]
-            mwr_vals = [get_perf_pct(f'MWR_{c}') if get_perf_pct(f'MWR_{c}') is not None else 0 for c in period_cols]
-            pl_vals = [get_perf_raw(f'손익_{c}') if get_perf_raw(f'손익_{c}') is not None else 0 for c in period_cols]
-
-            # 차트 1: TWR + MWR 그룹 막대
-            fig_ret = go.Figure()
-            fig_ret.add_trace(go.Bar(
-                name='TWR',
-                x=period_cols,
-                y=twr_vals,
-                marker_color='#1976d2',
-                text=[f'{v:+.1f}%' for v in twr_vals],
-                textposition='outside',
-                textfont=dict(size=11),
-            ))
-            fig_ret.add_trace(go.Bar(
-                name='MWR',
-                x=period_cols,
-                y=mwr_vals,
-                marker_color='#fb8c00',
-                text=[f'{v:+.1f}%' for v in mwr_vals],
-                textposition='outside',
-                textfont=dict(size=11),
-            ))
-            fig_ret.add_hline(y=0, line_color='gray', line_width=1)
-            fig_ret.update_layout(
-                barmode='group',
-                title=dict(text=f'{label} 수익률 — TWR / MWR (%)', font=dict(size=15)),
-                height=380,
-                margin=dict(l=20, r=20, t=60, b=50),
-                legend=dict(orientation='h', yanchor='top', y=1.08, xanchor='center', x=0.5,
-                            font=dict(size=13)),
-                font=dict(size=13, family='sans-serif'),
-                yaxis=dict(title='수익률 (%)', tickfont=dict(size=11), gridcolor='#eeeeee'),
-                xaxis=dict(tickfont=dict(size=12), tickangle=-30),
-                bargap=0.2,
-                bargroupgap=0.08,
-                plot_bgcolor='white',
-            )
-            st.plotly_chart(fig_ret, use_container_width=True)
-
-            # 차트 2: 손익 (KRW) — 양수=초록, 음수=빨강
-            colors = ['#2e7d32' if v >= 0 else '#c62828' for v in pl_vals]
-            fig_pl = go.Figure(go.Bar(
-                x=period_cols,
-                y=pl_vals,
-                marker_color=colors,
-                text=[f'₩{v:+,.0f}' for v in pl_vals],
-                textposition='outside',
-                textfont=dict(size=10),
-                cliponaxis=False,
-            ))
-            fig_pl.add_hline(y=0, line_color='gray', line_width=1)
-            fig_pl.update_layout(
-                title=dict(text=f'{label} 손익 (KRW)', font=dict(size=15)),
-                height=320,
-                margin=dict(l=20, r=20, t=50, b=50),
-                showlegend=False,
-                font=dict(size=13, family='sans-serif'),
-                yaxis=dict(title='손익 (₩)', tickfont=dict(size=11), gridcolor='#eeeeee'),
-                xaxis=dict(tickfont=dict(size=12), tickangle=-30),
-                bargap=0.3,
-                plot_bgcolor='white',
-            )
-            st.plotly_chart(fig_pl, use_container_width=True)
-
-        tab_m, tab_q = st.tabs([
-            f"📊 월별 ({len(month_cols)}개월)",
-            f"📊 분기별 ({len(quarter_cols)}개 분기)",
-        ])
-        with tab_m:
-            render_period_chart(month_cols, '월별')
-        with tab_q:
-            render_period_chart(quarter_cols, '분기별')
 
 # ---------------------------------------------------------
 st.divider()
