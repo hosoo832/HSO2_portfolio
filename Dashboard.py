@@ -622,6 +622,16 @@ if view == "💼 장중 실시간":
         ex = str(exchange_s).upper().strip()
         return ex in ('KOSPI', 'KOSDAQ', 'ETF', 'ETN', '')
 
+    # ticker → {theme, postion, country} 룩업 (dashboard_data 기반)
+    attr_lookup = {}
+    for _, r in sub_rt.iterrows():
+        tk = str(r['ticker']).strip()
+        attr_lookup[tk] = {
+            'theme': str(r.get('theme', '') or '').strip(),
+            'postion': str(r.get('postion', '') or '').strip(),
+            'country': str(r.get('country', '') or '').strip(),
+        }
+
     kr_rows = []      # [(ticker, name, qty, avg_cost), ...]
     foreign_rows = [] # [(ticker, name, qty, avg_cost, exchange, yf_ticker), ...]
     for _, r in sub_rt.iterrows():
@@ -673,10 +683,13 @@ if view == "💼 장중 실시간":
         cost_total = avg_cost * qty
         current_value = curr_krw * qty
         cumulative_pl = current_value - cost_total
-        # 컬럼 순서: 식별 → 매입/평가/누적 (4개 묶음) → 오늘 변동 (4개)
+        attrs = attr_lookup.get(tk, {})
+        # 컬럼 순서: 종목명/테마/포지션/국가 → 매입/평가/누적 → 오늘 변동
         return {
-            'Ticker': tk,
             '종목명': nm,
+            '테마': attrs.get('theme', ''),
+            '포지션': attrs.get('postion', ''),
+            '국가': attrs.get('country', ''),
             '수량': _qty_fmt(qty),
             '매입가': avg_cost,
             '매입금액': cost_total,
@@ -691,8 +704,13 @@ if view == "💼 장중 실시간":
 
     def _build_failed_row(tk, nm, qty, avg_cost):
         cost_total = avg_cost * qty
+        attrs = attr_lookup.get(tk, {})
         return {
-            'Ticker': tk, '종목명': nm, '수량': _qty_fmt(qty),
+            '종목명': nm,
+            '테마': attrs.get('theme', ''),
+            '포지션': attrs.get('postion', ''),
+            '국가': attrs.get('country', ''),
+            '수량': _qty_fmt(qty),
             '매입가': avg_cost, '매입금액': cost_total,
             '현재 평가액': 0, '누적 손익': 0,
             '전일종가': 0, '현재가': 0,
@@ -1160,87 +1178,7 @@ else:
 - ₩ 수치는 *"감 잡기"* 용 참고치
 """)
 
-# ---------------------------------------------------------
-# [블록 2] 비중 도넛 3개
-# ---------------------------------------------------------
-st.subheader("🥧 비중")
-
-def _prep_for_pie(df, group_col, cash_label='현금', hedge_label='헷지', detect_hedge=False):
-    """cash row 와 (옵션) hedge row 의 group_col 값을 명확한 라벨로 변경.
-    - cash 는 ticker.startswith('CASH') 로 감지 → '현금' 라벨
-    - hedge 는 theme='헷지' / postion='방위군' / military='방위군' 중 하나로 감지 (detect_hedge=True 시)
-      → '헷지' 라벨. 국가별 pie 에서 인버스 ETF 등을 한국/미국 에서 분리해 별도 표시할 때 사용.
-    """
-    if group_col not in df.columns or df.empty:
-        return df
-    df = df.copy()
-    # 1) Cash 라벨링
-    mask_cash = df['ticker'].astype(str).str.startswith('CASH')
-    df.loc[mask_cash, group_col] = cash_label
-    # 2) Hedge 라벨링 (요청된 경우만)
-    if detect_hedge:
-        mask_hedge = pd.Series(False, index=df.index)
-        if 'theme' in df.columns:
-            mask_hedge |= df['theme'].astype(str).str.strip() == '헷지'
-        if 'postion' in df.columns:
-            mask_hedge |= df['postion'].astype(str).str.strip() == '방위군'
-        if 'military' in df.columns:
-            mask_hedge |= df['military'].astype(str).str.strip() == '방위군'
-        # cash 우선 (cash 면 '현금' 유지, hedge 로 덮어쓰지 않음)
-        mask_hedge = mask_hedge & ~mask_cash
-        df.loc[mask_hedge, group_col] = hedge_label
-    return df
-
-def make_pie(df, group_col, title):
-    if group_col not in df.columns or df.empty:
-        return None
-    grouped = (
-        df.groupby(group_col, dropna=False)['market_value_krw']
-        .sum()
-        .reset_index()
-    )
-    grouped = grouped[grouped['market_value_krw'] > 0]
-    grouped[group_col] = grouped[group_col].astype(str).replace('', '미분류')
-    if grouped.empty:
-        return None
-    fig = px.pie(grouped, values='market_value_krw', names=group_col, hole=0.5)
-    fig.update_traces(
-        textposition='inside',
-        textinfo='label+percent',
-        textfont=dict(size=14, family='sans-serif'),  # 도넛 안 라벨
-        insidetextorientation='radial',
-    )
-    fig.update_layout(
-        title=dict(text=title, font=dict(size=18)),  # 차트 제목
-        showlegend=False,
-        height=340,
-        margin=dict(l=10, r=10, t=50, b=10),
-        font=dict(size=14, family='sans-serif'),
-    )
-    return fig
-
-pc1, pc2, pc3 = st.columns(3)
-with pc1:
-    # cash row → '현금', 헷지 ETF → '헷지' (theme/postion/military 로 자동 감지)
-    fig = make_pie(_prep_for_pie(df_view, 'country', detect_hedge=True), 'country', '국가별')
-    if fig: st.plotly_chart(fig, use_container_width=True)
-    else: st.info("국가별 데이터 없음")
-
-with pc2:
-    fig = make_pie(df_view, 'theme', '테마별')
-    if fig: st.plotly_chart(fig, use_container_width=True)
-    else: st.info("테마별 데이터 없음")
-
-with pc3:
-    # 군종별: cash row → '현금'. 그룹별 (전체뷰) 는 cash 변환 안 함
-    if third_pie_col == 'group_name':
-        fig = make_pie(df_view, third_pie_col, third_pie_title)
-    else:
-        fig = make_pie(_prep_for_pie(df_view, third_pie_col), third_pie_col, third_pie_title)
-    if fig: st.plotly_chart(fig, use_container_width=True)
-    else: st.info(f"{third_pie_title} 데이터 없음")
-
-st.divider()
+# [블록 2] 비중 도넛 → 블록 4 (벤치마크) 아래로 이동됨 (v75.x reorder)
 
 # ---------------------------------------------------------
 # [블록 3] 단기 수익률 + 손익 표
@@ -1504,6 +1442,88 @@ else:
 st.divider()
 
 # ---------------------------------------------------------
+# [블록 2] 비중 도넛 3개 (BM 비교 아래로 이동 v75.x)
+# ---------------------------------------------------------
+st.subheader("🥧 비중")
+
+def _prep_for_pie(df, group_col, cash_label='현금', hedge_label='헷지', detect_hedge=False):
+    """cash row 와 (옵션) hedge row 의 group_col 값을 명확한 라벨로 변경.
+    - cash 는 ticker.startswith('CASH') 로 감지 → '현금' 라벨
+    - hedge 는 theme='헷지' / postion='방위군' / military='방위군' 중 하나로 감지 (detect_hedge=True 시)
+      → '헷지' 라벨. 국가별 pie 에서 인버스 ETF 등을 한국/미국 에서 분리해 별도 표시할 때 사용.
+    """
+    if group_col not in df.columns or df.empty:
+        return df
+    df = df.copy()
+    # 1) Cash 라벨링
+    mask_cash = df['ticker'].astype(str).str.startswith('CASH')
+    df.loc[mask_cash, group_col] = cash_label
+    # 2) Hedge 라벨링 (요청된 경우만)
+    if detect_hedge:
+        mask_hedge = pd.Series(False, index=df.index)
+        if 'theme' in df.columns:
+            mask_hedge |= df['theme'].astype(str).str.strip() == '헷지'
+        if 'postion' in df.columns:
+            mask_hedge |= df['postion'].astype(str).str.strip() == '방위군'
+        if 'military' in df.columns:
+            mask_hedge |= df['military'].astype(str).str.strip() == '방위군'
+        # cash 우선 (cash 면 '현금' 유지, hedge 로 덮어쓰지 않음)
+        mask_hedge = mask_hedge & ~mask_cash
+        df.loc[mask_hedge, group_col] = hedge_label
+    return df
+
+def make_pie(df, group_col, title):
+    if group_col not in df.columns or df.empty:
+        return None
+    grouped = (
+        df.groupby(group_col, dropna=False)['market_value_krw']
+        .sum()
+        .reset_index()
+    )
+    grouped = grouped[grouped['market_value_krw'] > 0]
+    grouped[group_col] = grouped[group_col].astype(str).replace('', '미분류')
+    if grouped.empty:
+        return None
+    fig = px.pie(grouped, values='market_value_krw', names=group_col, hole=0.5)
+    fig.update_traces(
+        textposition='inside',
+        textinfo='label+percent',
+        textfont=dict(size=14, family='sans-serif'),  # 도넛 안 라벨
+        insidetextorientation='radial',
+    )
+    fig.update_layout(
+        title=dict(text=title, font=dict(size=18)),  # 차트 제목
+        showlegend=False,
+        height=340,
+        margin=dict(l=10, r=10, t=50, b=10),
+        font=dict(size=14, family='sans-serif'),
+    )
+    return fig
+
+pc1, pc2, pc3 = st.columns(3)
+with pc1:
+    # cash row → '현금', 헷지 ETF → '헷지' (theme/postion/military 로 자동 감지)
+    fig = make_pie(_prep_for_pie(df_view, 'country', detect_hedge=True), 'country', '국가별')
+    if fig: st.plotly_chart(fig, use_container_width=True)
+    else: st.info("국가별 데이터 없음")
+
+with pc2:
+    fig = make_pie(df_view, 'theme', '테마별')
+    if fig: st.plotly_chart(fig, use_container_width=True)
+    else: st.info("테마별 데이터 없음")
+
+with pc3:
+    # 군종별: cash row → '현금'. 그룹별 (전체뷰) 는 cash 변환 안 함
+    if third_pie_col == 'group_name':
+        fig = make_pie(df_view, third_pie_col, third_pie_title)
+    else:
+        fig = make_pie(_prep_for_pie(df_view, third_pie_col), third_pie_col, third_pie_title)
+    if fig: st.plotly_chart(fig, use_container_width=True)
+    else: st.info(f"{third_pie_title} 데이터 없음")
+
+st.divider()
+
+# ---------------------------------------------------------
 # [블록 5] 현금 / Gross / Long / Net 비중
 # rebalancing_master 시트의 자동 수식 결과를 직접 사용
 # - 멘토/HS 뷰: 해당 그룹 행에서 Q~V 컬럼값 그대로
@@ -1677,6 +1697,156 @@ else:
         "💡 위 값은 `rebalancing_master` 시트의 자동 수식 결과 — "
         "시트에서 수식/목표 바꾸시면 dashboard 도 자동 따라옵니다."
     )
+
+# ---------------------------------------------------------
+# [블록 5.3] 국가별 Gross 비중
+# rebalancing_master 의 K(국가별 Gross 목표) / L(국가별 Gross 현재) 사용
+# 머지 셀이라 첫 행에만 값 → df_rebal_master 에서 country 별 첫 non-empty 값 추출
+# ---------------------------------------------------------
+st.divider()
+st.subheader("🌏 국가별 Gross 비중")
+
+with st.expander("ℹ️ 계산 방식 보기"):
+    st.markdown(
+        """
+**값의 출처**: `rebalancing_master` 시트의 `국가별 Gross` 컬럼 (K/L 열).
+
+**개념**: 포트폴리오 내 자산이 **어느 국가 시장**에 얼마나 노출되어 있는지.
+- **국내** = 한국 시장 (KOSPI/KOSDAQ 종목)
+- **중국** = 중국 본토/홍콩 종목
+- **미국** = 미국 시장 종목
+- **헷지** = 인버스 ETF / VIX / 채권 등 시장 하락 베팅 자산
+
+**합계 = Gross (현금 제외 투자 자산 합)**. 즉 4개 국가 합 = Gross 비중.
+        """
+    )
+
+# rebalancing_master 의 country 별 첫 non-empty 값 추출
+def get_country_metric(country_label, metric_col, accounts):
+    """rebalancing_master 에서 (account, country) 매칭 행의 metric 첫 non-empty 값."""
+    if df_rebal_master.empty:
+        return None
+    if 'account' not in df_rebal_master.columns or 'Country' not in df_rebal_master.columns:
+        return None
+    if metric_col not in df_rebal_master.columns:
+        return None
+    sub = df_rebal_master[
+        df_rebal_master['account'].apply(clean_account).isin(accounts)
+        & (df_rebal_master['Country'].astype(str).str.strip() == country_label)
+    ]
+    if sub.empty:
+        return None
+    for v in sub[metric_col]:
+        s = str(v).strip()
+        if s and s.lower() not in ('-', 'nan', 'none'):
+            parsed = parse_pct_value(s)
+            if parsed is not None:
+                return parsed
+    return None
+
+def get_country_total_weighted(country_label, metric_col):
+    """전체 뷰: 멘토 + HS 의 AUM 가중평균 (해당 country 행 기준)."""
+    total_aum = mentor_aum + hs_aum
+    if total_aum == 0:
+        return None
+    mv = get_country_metric(country_label, metric_col, MENTOR_ACCS)
+    hv = get_country_metric(country_label, metric_col, HS_ACCS)
+    if mv is None and hv is None:
+        return None
+    if mv is None: mv = 0.0
+    if hv is None: hv = 0.0
+    return (mentor_aum * mv + hs_aum * hv) / total_aum
+
+# 4 country 로 표시 — 시트의 Country 라벨과 일치해야 함
+COUNTRIES = ['국내', '중국', '미국', '헷지']
+TARGET_COL = '국가별 Gross (목표)'
+CURRENT_COL = '국가별 Gross (현재)'
+
+if view == "전체":
+    country_values = [
+        (c, get_country_total_weighted(c, TARGET_COL),
+            get_country_total_weighted(c, CURRENT_COL))
+        for c in COUNTRIES
+    ]
+    show_target_country = False
+elif view == "멘토 포폴":
+    country_values = [
+        (c, get_country_metric(c, TARGET_COL, MENTOR_ACCS),
+            get_country_metric(c, CURRENT_COL, MENTOR_ACCS))
+        for c in COUNTRIES
+    ]
+    show_target_country = True
+else:  # HS 포폴
+    country_values = [
+        (c, get_country_metric(c, TARGET_COL, HS_ACCS),
+            get_country_metric(c, CURRENT_COL, HS_ACCS))
+        for c in COUNTRIES
+    ]
+    show_target_country = True
+
+# 4 카드 가로 배치 (블록 5 와 동일 양식)
+cols_country = st.columns(4)
+for col_st, (label, target, current) in zip(cols_country, country_values):
+    delta_str = None
+    if show_target_country and target is not None:
+        delta_str = f"목표 {fmt_simple_pct(target)}"
+    with col_st:
+        st.metric(
+            label,
+            fmt_simple_pct(current),
+            delta=delta_str,
+            delta_color="off",
+        )
+
+# 그룹 막대 차트 (녹색 톤 — 블록 5 의 파란색과 차별화)
+country_labels = [c[0] for c in country_values]
+country_target_vals = [c[1] if c[1] is not None else 0 for c in country_values]
+country_current_vals = [c[2] if c[2] is not None else 0 for c in country_values]
+
+fig_country = go.Figure()
+if show_target_country:
+    fig_country.add_trace(go.Bar(
+        name='목표',
+        x=country_labels,
+        y=country_target_vals,
+        marker_color='#a5d6a7',  # 연한 녹색 (sage)
+        text=[f'{v:.1f}%' for v in country_target_vals],
+        textposition='outside',
+        textfont=dict(size=13, color='#2e7d32'),
+    ))
+fig_country.add_trace(go.Bar(
+    name='현재' if show_target_country else '현재 비중',
+    x=country_labels,
+    y=country_current_vals,
+    marker_color='#2e7d32',  # 진한 녹색 (forest)
+    text=[f'{v:.1f}%' for v in country_current_vals],
+    textposition='outside',
+    textfont=dict(size=13, color='#1b5e20'),
+))
+fig_country.update_layout(
+    barmode='group',
+    height=300,
+    margin=dict(l=20, r=20, t=30, b=40),
+    showlegend=show_target_country,
+    legend=dict(orientation='h', yanchor='top', y=1.12, xanchor='center', x=0.5,
+                font=dict(size=13)),
+    font=dict(size=14, family='sans-serif'),
+    yaxis=dict(
+        title=dict(text='비중 (%)', font=dict(size=14)),
+        tickfont=dict(size=12),
+        gridcolor='#eeeeee',
+    ),
+    xaxis=dict(tickfont=dict(size=15)),
+    bargap=0.25,
+    bargroupgap=0.08,
+    plot_bgcolor='white',
+)
+st.plotly_chart(fig_country, use_container_width=True)
+
+st.caption(
+    "💡 4개 카드 합 ≈ Gross (현금 제외 투자 비중). "
+    "차이가 크면 특정 국가에 과/저 노출된 상태."
+)
 
 # ---------------------------------------------------------
 # [블록 5.5] 퇴직연금 가드 (HS 뷰 전용)
@@ -1858,17 +2028,47 @@ if view in ("멘토 포폴", "HS 포폴"):
             if df_show.empty:
                 st.info("필터 조건에 맞는 종목이 없습니다.")
             else:
+                # ---- master_data 와 join 하여 theme/postion/country 가져옴 ----
+                if not df_master.empty and 'ticker' in df_master.columns:
+                    # country 컬럼명 통일 (소문자 우선, 없으면 대문자)
+                    country_col = 'country' if 'country' in df_master.columns else (
+                        'Country' if 'Country' in df_master.columns else None
+                    )
+                    extra_cols = [c for c in ['theme', 'postion'] if c in df_master.columns]
+                    if country_col:
+                        extra_cols.append(country_col)
+                    if extra_cols:
+                        df_show = df_show.merge(
+                            df_master[['ticker'] + extra_cols].drop_duplicates(subset='ticker'),
+                            on='ticker',
+                            how='left',
+                            suffixes=('', '_m'),
+                        )
+                        # 'Country' → 'country' 통일
+                        if country_col == 'Country':
+                            df_show['country'] = df_show['Country']
+
+                # 누락 컬럼 안전 채움
+                for col in ['theme', 'postion', 'country']:
+                    if col not in df_show.columns:
+                        df_show[col] = ''
+
+                # 괴리율 (Drift) = 목표비중 - 현재비중 (퍼센트 포인트)
+                df_show['drift'] = df_show['target_ratio'].fillna(0) - df_show['current_ratio'].fillna(0)
+
                 # ---- 표시용 DataFrame 빌드 ----
                 display = pd.DataFrame({
                     '계좌': df_show['account'],
-                    'Ticker': df_show['ticker'],
                     '종목명': df_show['name'],
+                    '테마': df_show['theme'].fillna('').astype(str),
+                    '포지션': df_show['postion'].fillna('').astype(str),
+                    '국가': df_show['country'].fillna('').astype(str),
                     '매매기준(현재가)': df_show['current_price_krw'],
                     '현재수량': df_show['quantity'],
                     '현재 평가액': df_show['market_value_krw'],
                     '현재비중': df_show['current_ratio'],
                     '목표비중': df_show['target_ratio'],
-                    '목표 평가액': df_show['target_value_krw'],
+                    '괴리율': df_show['drift'],
                     '매매 필요수량': df_show['rebalancing_quantity'],
                     '리밸런싱 금액': df_show['rebalancing_value_krw'],
                 })
@@ -1892,6 +2092,18 @@ if view in ("멘토 포폴", "HS 포폴"):
                         pass
                     return ''
 
+                # 괴리율 색칠: 양수(매수 압력)=연파랑, 음수(매도 압력)=연주황
+                def color_drift(val):
+                    try:
+                        v = float(val)
+                        if v > 0.5:
+                            return 'background-color: #e3f2fd; color: #0d47a1'
+                        elif v < -0.5:
+                            return 'background-color: #fff3e0; color: #e65100'
+                    except:
+                        pass
+                    return ''
+
                 styled = (
                     display.style
                     .format({
@@ -1900,11 +2112,12 @@ if view in ("멘토 포폴", "HS 포폴"):
                         '현재 평가액': '₩{:,.0f}',
                         '현재비중': '{:.2f}%',
                         '목표비중': '{:.2f}%',
-                        '목표 평가액': '₩{:,.0f}',
+                        '괴리율': '{:+.2f}%p',
                         '매매 필요수량': '{:+,.0f}',
                         '리밸런싱 금액': '₩{:+,.0f}',
                     })
                     .map(color_action, subset=['리밸런싱 금액', '매매 필요수량'])
+                    .map(color_drift, subset=['괴리율'])
                 )
 
                 st.dataframe(
@@ -1916,8 +2129,9 @@ if view in ("멘토 포폴", "HS 포폴"):
 
                 st.caption(
                     "💡 **정렬**: 리밸런싱 금액 절대값 큰 순. 헤더 클릭하면 다른 기준으로 정렬 가능.  "
-                    "**색상**: 🟢 매수 (target > current) / 🔴 매도 (target < current) / ⚪ 보유 (차이 ±₩100 이내).  "
-                    "**리밸런싱 금액 = 목표 평가액 − 현재 평가액** (양수=매수, 음수=매도)"
+                    "**색상**: 🟢 매수 / 🔴 매도 / ⚪ 보유 (차이 ±₩100 이내).  "
+                    "**괴리율** = 목표비중 − 현재비중 (퍼센트 포인트). 🔵 +면 매수 압력, 🟠 −면 매도 압력.  "
+                    "**리밸런싱 금액** = 목표 평가액 − 현재 평가액 (양수=매수, 음수=매도)"
                 )
 
 # ---------------------------------------------------------
