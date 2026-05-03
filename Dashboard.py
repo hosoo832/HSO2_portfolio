@@ -1190,7 +1190,10 @@ BM_LABELS = ['2026 MAIN BM', 'KOSPI', 'KOSDAQ', 'Shanghai', 'S&P 500', 'NASDAQ']
 # 비교 가능한 기간 후보 (df_perf 컬럼에 있는 것만 노출)
 period_candidates = [
     '1일', 'WTD(이번주)', 'W-1(저번주)', 'MTD(이번달)', 'M-1(지난달)', 'M-2(2달전)',
-    'YTD', '누적수익률(%)', '지정(25-05-14~)', '지정(25-07-21~)',
+    'YTD', '누적수익률(%)',
+    '지정(25-05-14~)',  # 멘토 2기 운용 시작
+    '지정(25-07-21~)',  # HS 포트폴리오 분리 시작
+    '지정(25-10-29~)',  # 멘토 3기 시작
 ]
 period_options = [p for p in period_candidates if not df_perf.empty and p in df_perf.columns]
 
@@ -1387,7 +1390,7 @@ else:
         pl_labels.append(f'YTD<br>({current_year})')
         pl_values.append(ytd_total)
 
-    # 5/14~ (멘토 inception)
+    # 5/14~ (멘토 2기 inception)
     pl_5_14 = get_perf_raw('지정_손익(25-05-14~)')
     if pl_5_14 is not None:
         pl_labels.append('5/14~')
@@ -1398,6 +1401,12 @@ else:
     if pl_7_21 is not None:
         pl_labels.append('7/21~')
         pl_values.append(pl_7_21)
+
+    # 10/29~ (멘토 3기 inception)
+    pl_10_29 = get_perf_raw('지정_손익(25-10-29~)')
+    if pl_10_29 is not None:
+        pl_labels.append('10/29~')
+        pl_values.append(pl_10_29)
 
     # 누적 (전체기간)
     cumulative_pl = get_perf_raw('평가손익')
