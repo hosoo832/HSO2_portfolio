@@ -256,7 +256,7 @@ with st.sidebar:
 
     view = st.radio(
         "뷰 선택",
-        ["전체", "멘토 포폴", "HS 포폴", "💼 장중 실시간", "📰 시장 동향"],
+        ["전체", "멘토 포폴", "HS 포폴", "💼 장중 실시간", "📰 시장 동향", "📓 작전 일지"],
         index=0,
     )
 
@@ -572,6 +572,306 @@ if view == "📰 시장 동향":
             )
 
     st.stop()  # 시장 동향 뷰는 여기서 종료
+
+# =========================================================
+# [작전 일지 뷰] — 매일 시장 진단 + 매매 기록 + 회고
+# - 좌측: 시장 주요 지표 (자동), 경제 지표/이슈 (수동)
+# - 우측: 매매 내역, 전투 일지, 전투 계획 (수동)
+# - 저장: journal_log 시트 (date 키로 upsert)
+# =========================================================
+if view == "📓 작전 일지":
+    from datetime import date as _date
+
+    st.title("📓 작전 일지")
+    st.caption("매일 시장 진단 + 매매 기록 + 회고. 같은 날짜로 다시 저장하면 덮어쓰기.")
+
+    # ---- 날짜 선택 ----
+    col_d1, col_d2 = st.columns([2, 3])
+    with col_d1:
+        sel_date = st.date_input("📅 일지 날짜", value=_date.today(), key="journal_date")
+
+    # ---- journal_log 시트 헬퍼 ----
+    JOURNAL_HEADERS = ['date', 'updated_at', '경제지표', '시장이슈', '매매내역', '전투일지', '전투계획']
+
+    @st.cache_data(ttl=30, show_spinner=False)
+    def _load_journal_raw():
+        gc = get_gspread_client()
+        try:
+            ws = gc.open(SHEET_NAME).worksheet("journal_log")
+        except Exception:
+            return None  # 시트 없음
+        vals = ws.get_all_values()
+        if not vals:
+            return None
+        df = pd.DataFrame(vals[1:], columns=vals[0])
+        return df
+
+    def _ensure_journal_sheet():
+        """journal_log 시트 없으면 생성 + 헤더 입력. 있으면 worksheet 반환."""
+        gc = get_gspread_client()
+        wb = gc.open(SHEET_NAME)
+        try:
+            ws = wb.worksheet("journal_log")
+        except Exception:
+            ws = wb.add_worksheet(title="journal_log", rows="500", cols="10")
+            ws.append_row(JOURNAL_HEADERS, value_input_option='USER_ENTERED')
+        return ws
+
+    def _save_journal(date_str, fields):
+        """날짜 기준으로 upsert. fields = dict (경제지표, 시장이슈, ...)"""
+        ws = _ensure_journal_sheet()
+        all_vals = ws.get_all_values()
+        # 헤더 검증/누락 시 보정
+        if not all_vals:
+            ws.append_row(JOURNAL_HEADERS, value_input_option='USER_ENTERED')
+            all_vals = [JOURNAL_HEADERS]
+
+        headers = all_vals[0]
+        date_col_idx = headers.index('date') if 'date' in headers else 0
+
+        # 기존 행 찾기
+        target_row_idx = None
+        for i, row in enumerate(all_vals[1:], start=2):  # 1-indexed sheet rows
+            if len(row) > date_col_idx and row[date_col_idx] == date_str:
+                target_row_idx = i
+                break
+
+        new_row = [
+            date_str,
+            datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            fields.get('경제지표', ''),
+            fields.get('시장이슈', ''),
+            fields.get('매매내역', ''),
+            fields.get('전투일지', ''),
+            fields.get('전투계획', ''),
+        ]
+
+        if target_row_idx:
+            # update existing
+            ws.update(range_name=f"A{target_row_idx}:G{target_row_idx}",
+                      values=[new_row], value_input_option='USER_ENTERED')
+            return 'updated'
+        else:
+            ws.append_row(new_row, value_input_option='USER_ENTERED')
+            return 'created'
+
+    # 기존 일지 로드 (있으면)
+    df_journal = _load_journal_raw()
+    sel_date_str = sel_date.strftime('%Y-%m-%d')
+    existing = {}
+    if df_journal is not None and not df_journal.empty:
+        match = df_journal[df_journal['date'] == sel_date_str]
+        if not match.empty:
+            r = match.iloc[-1].to_dict()
+            existing = {k: r.get(k, '') for k in JOURNAL_HEADERS}
+            st.info(f"📖 {sel_date_str} 일지가 이미 있어요. 마지막 수정: {existing.get('updated_at', '?')}. 수정하고 다시 저장 가능.")
+
+    # ============================================================
+    # 섹션 A — 시장 주요 지표 (자동)
+    # ============================================================
+    st.markdown("### 📊 A. 시장 주요 지표")
+
+    # market_data 시트에서 sel_date 또는 가장 가까운 과거 거래일 데이터 가져옴
+    try:
+        df_md = load_sheet("market_data")
+        if not df_md.empty:
+            date_col = df_md.columns[0]
+            _date_raw = df_md[date_col].astype(str).str.strip()
+            _date_norm = (_date_raw
+                          .str.replace(r'\s*\([^)]*\)\s*', '', regex=True)
+                          .str.replace(r'[\.\s/]+', '-', regex=True)
+                          .str.strip('-'))
+            df_md['_date'] = pd.to_datetime(_date_norm, errors='coerce')
+            df_md = df_md.dropna(subset=['_date']).sort_values('_date')
+
+            # 숫자 컬럼 변환
+            for col in df_md.columns:
+                if col not in (date_col, '_date'):
+                    df_md[col] = pd.to_numeric(
+                        df_md[col].astype(str).str.replace(r'[^\d.\-]', '', regex=True),
+                        errors='coerce'
+                    )
+
+            sel_ts = pd.Timestamp(sel_date)
+            match_md = df_md[df_md['_date'] <= sel_ts]
+            if match_md.empty:
+                st.warning(f"market_data 에 {sel_date_str} 이전 데이터 없음")
+                md_row = None
+            else:
+                md_row = match_md.iloc[-1]
+                actual_date = md_row['_date'].strftime('%Y-%m-%d')
+                if actual_date != sel_date_str:
+                    st.caption(f"⚠️ {sel_date_str} 시장 데이터 없음 → 직전 거래일 ({actual_date}) 데이터 표시")
+        else:
+            md_row = None
+    except Exception as e:
+        st.error(f"market_data 로드 실패: {e}")
+        md_row = None
+
+    if md_row is not None:
+        def _fmt_v(v):
+            if pd.isna(v): return '-'
+            if abs(v) >= 10000: return f"{v:,.0f}"
+            return f"{v:,.2f}"
+
+        def _fmt_p(v):
+            if pd.isna(v): return '-'
+            return f"{v:+.2f}%"
+
+        def _row_idx(col):
+            return md_row.get(col) if col in md_row.index else None
+
+        # ─ 국내
+        st.markdown("**🇰🇷 국내**")
+        col1, col2, col3 = st.columns(3)
+        col1.metric("KOSPI", _fmt_v(_row_idx('KOSPI_price')), _fmt_p(_row_idx('KOSPI_chg_pct')))
+        col2.metric("KOSDAQ", _fmt_v(_row_idx('KOSDAQ_price')), _fmt_p(_row_idx('KOSDAQ_chg_pct')))
+        col3.metric("KR 10Y 채권", _fmt_v(_row_idx('KR_10Y_Bond_rate')) + "%" if not pd.isna(_row_idx('KR_10Y_Bond_rate') or 0) else '-', None)
+
+        col4, col5, col6 = st.columns(3)
+        kospi_vol = _row_idx('KOSPI_volume')
+        kosdaq_vol = _row_idx('KOSDAQ_volume')
+        col4.metric("KOSPI 거래대금", f"{kospi_vol:,.0f} 억" if not pd.isna(kospi_vol or 0) else '-')
+        col5.metric("KOSDAQ 거래대금", f"{kosdaq_vol:,.0f} 억" if not pd.isna(kosdaq_vol or 0) else '-')
+        col6.metric("USD/KRW", _fmt_v(_row_idx('USDKRW_price')), _fmt_p(_row_idx('USDKRW_chg_pct')))
+
+        # ─ 해외
+        st.markdown("**🌐 해외**")
+        col7, col8, col9 = st.columns(3)
+        col7.metric("S&P 500", _fmt_v(_row_idx('SP500_price')), _fmt_p(_row_idx('SP500_chg_pct')))
+        col8.metric("NASDAQ", _fmt_v(_row_idx('NASDAQ_price')), _fmt_p(_row_idx('NASDAQ_chg_pct')))
+        col9.metric("Nikkei", _fmt_v(_row_idx('NIKKEI_price')), _fmt_p(_row_idx('NIKKEI_chg_pct')))
+
+        col10, col11, col12 = st.columns(3)
+        col10.metric("Shanghai", _fmt_v(_row_idx('SHANGHAI_price')), _fmt_p(_row_idx('SHANGHAI_chg_pct')))
+        col11.metric("DAX", _fmt_v(_row_idx('DAX_price')), _fmt_p(_row_idx('DAX_chg_pct')))
+        col12.metric("USD Index", _fmt_v(_row_idx('USD_IDX_price')), _fmt_p(_row_idx('USD_IDX_chg_pct')))
+
+        # ─ 채권/원자재/변동성/크립토
+        st.markdown("**📈 채권 / 원자재 / 변동성 / 크립토**")
+        col13, col14, col15 = st.columns(3)
+        us10 = _row_idx('US_10Y_Bond_rate')
+        us30 = _row_idx('US_30Y_Bond_rate')
+        col13.metric("US 10Y 채권", f"{us10:.2f}%" if not pd.isna(us10 or 0) else '-')
+        col14.metric("US 30Y 채권", f"{us30:.2f}%" if not pd.isna(us30 or 0) else '-')
+        col15.metric("VIX", _fmt_v(_row_idx('VIX_price')), _fmt_p(_row_idx('VIX_chg_pct')))
+
+        col16, col17, col18 = st.columns(3)
+        col16.metric("WTI", _fmt_v(_row_idx('WTI_price')), _fmt_p(_row_idx('WTI_chg_pct')))
+        col17.metric("Gold", _fmt_v(_row_idx('GOLD_price')), _fmt_p(_row_idx('GOLD_chg_pct')))
+        col18.metric("BTC", _fmt_v(_row_idx('BTC_price')), _fmt_p(_row_idx('BTC_chg_pct')))
+
+    st.divider()
+
+    # ============================================================
+    # 섹션 B-F — 폼 (수동 입력)
+    # ============================================================
+    with st.form("journal_form", clear_on_submit=False):
+        st.markdown("### 📝 B. 경제 지표")
+        econ = st.text_area(
+            "경제 지표 (CPI, 실업수당, 금리 결정 등 — 그날 발표된 것만)",
+            value=existing.get('경제지표', ''),
+            height=120,
+            placeholder="예시:\n미국 - CPI 실적 2.4% / 예상 2.3% / 이전 2.5%\n한국 - 금리 결정 실적 3.25% / 예상 3.25% / 이전 3.5%\n→ 4년만의 인하, 시장 영향 크지 않을듯",
+            label_visibility="collapsed",
+        )
+
+        st.markdown("### 🌪️ C. 시장 이슈와 해석")
+        issue = st.text_area(
+            "시장 이슈와 해석",
+            value=existing.get('시장이슈', ''),
+            height=180,
+            placeholder="예시:\n중국 인민은행 경제 부양책 발표\n1. 통화완화 - 기준금리 50bp 인하\n2. 부동산 정책 - 모기지 금리 50bp 인하\n→ 유동성 공급 이후 추가 부양책 고민 필요",
+            label_visibility="collapsed",
+        )
+
+        st.markdown("### 💸 D. 매매 내역과 이유")
+        # 기존 매매 내역 파싱
+        existing_trades = existing.get('매매내역', '').strip()
+        if existing_trades:
+            rows = []
+            for line in existing_trades.split('\n'):
+                parts = line.split('|')
+                while len(parts) < 5:
+                    parts.append('')
+                rows.append({
+                    '매매': parts[0], '종목명': parts[1], '가격': parts[2],
+                    '수익률': parts[3], '이유': parts[4],
+                })
+            trades_init = pd.DataFrame(rows)
+        else:
+            trades_init = pd.DataFrame(
+                [{'매매': '', '종목명': '', '가격': '', '수익률': '', '이유': ''}] * 3
+            )
+
+        trades_edited = st.data_editor(
+            trades_init,
+            num_rows="dynamic",
+            use_container_width=True,
+            column_config={
+                '매매': st.column_config.SelectboxColumn(
+                    options=['', '매수', '매도', '관망'], width="small"),
+                '종목명': st.column_config.TextColumn(width="medium"),
+                '가격': st.column_config.TextColumn(help="₩ 가격 또는 자유 텍스트", width="small"),
+                '수익률': st.column_config.TextColumn(help="매도 시 실현 수익률 (선택)", width="small"),
+                '이유': st.column_config.TextColumn(width="large"),
+            },
+            key="trades_editor",
+        )
+
+        st.markdown("### ⚔️ E. 오늘의 전투 일지")
+        log = st.text_area(
+            "오늘의 전투 일지",
+            value=existing.get('전투일지', ''),
+            height=180,
+            placeholder="시장 흐름, 내 판단, 잘한 것/실수한 것, 깨달은 것 등 자유 회고",
+            label_visibility="collapsed",
+        )
+
+        st.markdown("### 🎯 F. 내일의 전투 계획")
+        plan = st.text_area(
+            "내일의 전투 계획",
+            value=existing.get('전투계획', ''),
+            height=120,
+            placeholder="원칙 / 마음가짐 / 내일 체크할 종목·이벤트 등",
+            label_visibility="collapsed",
+        )
+
+        submitted = st.form_submit_button("💾 저장", type="primary", use_container_width=True)
+
+        if submitted:
+            # 매매 내역 → multi-line text 직렬화
+            trades_lines = []
+            for _, r in trades_edited.iterrows():
+                action = str(r.get('매매', '')).strip()
+                name = str(r.get('종목명', '')).strip()
+                if not action and not name:
+                    continue  # 빈 행 스킵
+                price = str(r.get('가격', '')).strip()
+                ret = str(r.get('수익률', '')).strip()
+                reason = str(r.get('이유', '')).strip()
+                trades_lines.append(f"{action}|{name}|{price}|{ret}|{reason}")
+            trades_text = '\n'.join(trades_lines)
+
+            try:
+                result = _save_journal(sel_date_str, {
+                    '경제지표': econ,
+                    '시장이슈': issue,
+                    '매매내역': trades_text,
+                    '전투일지': log,
+                    '전투계획': plan,
+                })
+                st.cache_data.clear()  # 다음 로드 시 갱신
+                if result == 'updated':
+                    st.success(f"✅ {sel_date_str} 일지 갱신 완료")
+                else:
+                    st.success(f"✅ {sel_date_str} 일지 신규 저장 완료")
+            except Exception as e:
+                st.error(f"❌ 저장 실패: {e}")
+                import traceback
+                st.code(traceback.format_exc())
+
+    st.stop()  # 작전 일지 뷰는 여기서 종료
 
 # =========================================================
 # [장중 실시간 뷰] — 별도 흐름, st.stop() 으로 종료
