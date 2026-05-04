@@ -243,14 +243,25 @@ def main_run():
                 mentor_acc_ticker_mv = df_mentor.groupby(['account', 'ticker'])['market_value_krw'].sum().to_dict()
                 hs_acc_ticker_mv = df_hs.groupby(['account', 'ticker'])['market_value_krw'].sum().to_dict()
 
+                # 4.5 [v126 신규] 계좌별 총자산 / 가용현금 사전 구축
+                # - 계좌 AUM = 그 계좌의 모든 종목 + 현금 합 (현금격벽 인지를 위해)
+                # - 계좌 cash = ticker 가 'CASH' 로 시작하는 행의 합 (KRW + 외화 환산 모두)
+                mentor_acc_total = df_mentor.groupby('account')['market_value_krw'].sum().to_dict()
+                hs_acc_total = df_hs.groupby('account')['market_value_krw'].sum().to_dict()
+
+                _is_cash_m = df_mentor['ticker'].astype(str).str.startswith('CASH')
+                _is_cash_h = df_hs['ticker'].astype(str).str.startswith('CASH')
+                mentor_acc_cash = df_mentor[_is_cash_m].groupby('account')['market_value_krw'].sum().to_dict()
+                hs_acc_cash = df_hs[_is_cash_h].groupby('account')['market_value_krw'].sum().to_dict()
+
                 cells_to_update = []
-                
+
                 # 5. 각 행(종목)별 비중 순회 및 계산
                 for idx, row in df_target.iterrows():
                     sheet_row = idx + 2  # 구글 시트는 1행이 헤더이므로 인덱스에 2를 더함
                     acc = str(row.get('account', '')).strip()
                     ticker = str(row.get('ticker', '')).strip()
-                    
+
                     if not ticker: continue # 빈칸(티커 없음)은 스킵
 
                     # H열: Target Ratio 파싱 (% 기호 제거 및 소수점 변환)
@@ -264,9 +275,13 @@ def main_run():
                     if acc in mentor_accs:
                         total_mv = mentor_total_mv
                         t_mv = mentor_acc_ticker_mv.get((acc, ticker), 0.0)
+                        acc_aum = mentor_acc_total.get(acc, 0.0)
+                        acc_cash = mentor_acc_cash.get(acc, 0.0)
                     elif acc in hs_accs:
                         total_mv = hs_total_mv
                         t_mv = hs_acc_ticker_mv.get((acc, ticker), 0.0)
+                        acc_aum = hs_acc_total.get(acc, 0.0)
+                        acc_cash = hs_acc_cash.get(acc, 0.0)
                     else:
                         continue # 지정되지 않은 계좌가 섞여 있으면 스킵
 
@@ -275,14 +290,42 @@ def main_run():
                     actual_ratio = float((t_mv / total_mv) if total_mv > 0 else 0.0)
                     drift = float(target_ratio - actual_ratio)
 
+                    # [v126 신규] W/X/Y 열: 계좌 capacity 정보
+                    # W (23): 계좌 AUM 비중 = 이 계좌가 그룹 AUM 의 몇 % (= 단일종목 절대 max)
+                    # X (24): 계좌 가용현금 비중 = 추가 매수 capacity (% of group AUM)
+                    # Y (25): 이 종목에 줄 수 있는 max target_ratio
+                    #         = (현재 종목 평가액 + 계좌 가용현금) / 그룹 AUM
+                    #         → target_ratio > Y 이면 매수 불가능 (예수금 부족)
+                    acc_aum_ratio  = float((acc_aum / total_mv) if total_mv > 0 else 0.0)
+                    acc_cash_ratio = float((acc_cash / total_mv) if total_mv > 0 else 0.0)
+                    max_target_ratio = float(((t_mv + acc_cash) / total_mv) if total_mv > 0 else 0.0)
+
                     # I열(9), J열(10)에 순수 숫자(Float) 값 적재
                     cells_to_update.append(gspread.Cell(sheet_row, 9, actual_ratio))
                     cells_to_update.append(gspread.Cell(sheet_row, 10, drift))
-                
+                    # W(23), X(24), Y(25) 열 — 모두 decimal 형태 (시트에서 % 서식 적용 시 자동 환산)
+                    cells_to_update.append(gspread.Cell(sheet_row, 23, acc_aum_ratio))
+                    cells_to_update.append(gspread.Cell(sheet_row, 24, acc_cash_ratio))
+                    cells_to_update.append(gspread.Cell(sheet_row, 25, max_target_ratio))
+
+                # 5.5 [v126] W/X/Y 헤더 자동 작성 (한 번만 — 비어 있을 때)
+                try:
+                    header_cells = target_sheet_instance.batch_get(['W1:Y1'])
+                    existing_headers = header_cells[0][0] if header_cells and header_cells[0] else []
+                except Exception:
+                    existing_headers = []
+                if not existing_headers or any((c or '').strip() == '' for c in existing_headers + [''] * (3 - len(existing_headers))):
+                    cells_to_update.extend([
+                        gspread.Cell(1, 23, '계좌 AUM (%)'),
+                        gspread.Cell(1, 24, '계좌 가용현금 (%)'),
+                        gspread.Cell(1, 25, '매수가능 max (%)'),
+                    ])
+
                 # 6. 구글 시트로 한 번에 쏘기 (성능 최적화)
                 if cells_to_update:
                     target_sheet_instance.update_cells(cells_to_update)
-                    print("  [MAIN] 구글 시트 I열(Actual_Ratio), J열(Drift) 일괄 업데이트 완료! ✅")
+                    print("  [MAIN] 구글 시트 I/J/W/X/Y 열 일괄 업데이트 완료! ✅")
+                    print("        (I=Actual_Ratio, J=Drift, W=계좌AUM%, X=계좌가용현금%, Y=매수가능max%)")
             else:
                 print("  [!] 타겟 시트를 찾을 수 없거나 데이터가 비어있습니다.")
         except Exception as e:
@@ -422,6 +465,8 @@ def main_run():
             print(">>> [Success] Performance 분석 및 리포트 갱신 완료!")
         except Exception as e:
             print(f"  [!!!] Performance 실행 중 오류 발생: {e}")
+            import traceback
+            traceback.print_exc()
 
         print("\n--- [MAIN] 모든 작업이 성공적으로 완료되었습니다! ---")
 

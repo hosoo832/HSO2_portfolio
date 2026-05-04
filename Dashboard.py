@@ -2103,6 +2103,66 @@ if view in ("멘토 포폴", "HS 포폴"):
                       delta_color="off")
             s4.metric("총 종목 수", f"{len(df_rb)}개")
 
+            # ---- [v75.x] 계좌별 Capacity 요약 (현금격벽 인지) ----
+            # dashboard_data 에서 계좌별 AUM / 가용현금 + rebalancing_data 에서 계좌별 매수필요 합산
+            try:
+                df_dv = df_dashboard[df_dashboard['account_clean'].isin(target_accounts)].copy()
+                if not df_dv.empty and 'market_value_krw' in df_dv.columns:
+                    df_dv['market_value_krw'] = to_num(df_dv['market_value_krw'])
+                    group_aum = df_dv['market_value_krw'].sum()
+
+                    is_cash = df_dv['ticker'].astype(str).str.startswith('CASH')
+                    cash_per_acc = df_dv[is_cash].groupby('account_clean')['market_value_krw'].sum()
+                    aum_per_acc = df_dv.groupby('account_clean')['market_value_krw'].sum()
+                    buy_per_acc = df_rb[df_rb['rebalancing_value_krw'] > 0].groupby('_acc_clean')['rebalancing_value_krw'].sum()
+
+                    cap_rows = []
+                    for acc in sorted(target_accounts):
+                        a_aum = aum_per_acc.get(acc, 0)
+                        a_cash = cash_per_acc.get(acc, 0)
+                        a_buy = buy_per_acc.get(acc, 0)
+                        shortage = max(0, a_buy - a_cash)
+                        cap_rows.append({
+                            '계좌': acc,
+                            'AUM': a_aum,
+                            '그룹비중%': (a_aum / group_aum * 100) if group_aum > 0 else 0,
+                            '가용현금': a_cash,
+                            '매수필요(합)': a_buy,
+                            '부족액': shortage,
+                            '상태': '⚠️ 예수금 부족' if shortage > 100 else '✅' if a_buy > 100 else '➖',
+                        })
+                    cap_df = pd.DataFrame(cap_rows)
+
+                    with st.expander("💼 계좌별 Capacity & 예수금 점검", expanded=any(r['부족액'] > 100 for r in cap_rows)):
+                        styled_cap = (
+                            cap_df.style
+                            .format({
+                                'AUM': '₩{:,.0f}',
+                                '그룹비중%': '{:.1f}%',
+                                '가용현금': '₩{:,.0f}',
+                                '매수필요(합)': '₩{:,.0f}',
+                                '부족액': '₩{:,.0f}',
+                            })
+                            .map(
+                                lambda v: 'background-color: #ffebee; color: #b71c1c; font-weight: 600' if v == '⚠️ 예수금 부족' else (
+                                    'background-color: #e8f5e9; color: #1b5e20' if v == '✅' else ''
+                                ),
+                                subset=['상태'],
+                            )
+                            .map(
+                                lambda v: 'color: #b71c1c; font-weight: 600' if isinstance(v, (int, float)) and v > 100 else '',
+                                subset=['부족액'],
+                            )
+                        )
+                        st.dataframe(styled_cap, use_container_width=True, hide_index=True)
+                        st.caption(
+                            "💡 **부족액** = 매수필요(합) − 가용현금. 양수면 그 계좌의 매수 일부가 불가능 → "
+                            "다른 계좌로 종목 재배정 또는 매도 후 매수로 자금 마련 필요. "
+                            "**그룹비중%** = 해당 계좌가 그룹 AUM 에서 차지하는 비중 (= 그 계좌의 단일종목 절대 max)."
+                        )
+            except Exception as _e:
+                st.caption(f"⚠️ 계좌별 capacity 계산 실패: {_e}")
+
             # ---- 필터 컨트롤 ----
             fc1, fc2 = st.columns([1, 2])
             with fc1:
@@ -2163,6 +2223,26 @@ if view in ("멘토 포폴", "HS 포폴"):
                 # 괴리율 (Drift) = 목표비중 - 현재비중 (퍼센트 포인트)
                 df_show['drift'] = df_show['target_ratio'].fillna(0) - df_show['current_ratio'].fillna(0)
 
+                # [v75.x] 예수금 체크: 이 row 의 매수가 그 계좌의 가용현금 안에서 가능한가?
+                # cash_per_acc 는 위 capacity 섹션에서 계산됨 — 안전하게 fallback
+                try:
+                    _cash_lookup = cash_per_acc.to_dict() if 'cash_per_acc' in dir() else {}
+                except Exception:
+                    _cash_lookup = {}
+
+                def _capacity_status(r):
+                    rb = float(r.get('rebalancing_value_krw') or 0)
+                    if rb <= 100:
+                        return '➖'  # 매도 또는 보유
+                    acc = clean_account(r.get('account', ''))
+                    cash = _cash_lookup.get(acc, 0)
+                    if rb <= cash:
+                        return '✅'
+                    short = rb - cash
+                    return f'⚠️ 부족 ₩{short:,.0f}'
+
+                df_show['cash_check'] = df_show.apply(_capacity_status, axis=1)
+
                 # ---- 표시용 DataFrame 빌드 ----
                 display = pd.DataFrame({
                     '계좌': df_show['account'],
@@ -2178,6 +2258,7 @@ if view in ("멘토 포폴", "HS 포폴"):
                     '괴리율': df_show['drift'],
                     '매매 필요수량': df_show['rebalancing_quantity'],
                     '리밸런싱 금액': df_show['rebalancing_value_krw'],
+                    '예수금 체크': df_show['cash_check'],
                 })
 
                 # 절대값 큰 순으로 정렬 (큰 매매가 위로)
@@ -2211,6 +2292,15 @@ if view in ("멘토 포폴", "HS 포폴"):
                         pass
                     return ''
 
+                # 예수금 체크 컬럼 색칠: ⚠️ 빨강 / ✅ 초록 / ➖ 무색
+                def color_cash_check(val):
+                    s = str(val)
+                    if s.startswith('⚠️'):
+                        return 'background-color: #ffebee; color: #b71c1c; font-weight: 600'
+                    if s.startswith('✅'):
+                        return 'background-color: #e8f5e9; color: #1b5e20'
+                    return ''
+
                 styled = (
                     display.style
                     .format({
@@ -2225,6 +2315,7 @@ if view in ("멘토 포폴", "HS 포폴"):
                     })
                     .map(color_action, subset=['리밸런싱 금액', '매매 필요수량'])
                     .map(color_drift, subset=['괴리율'])
+                    .map(color_cash_check, subset=['예수금 체크'])
                 )
 
                 st.dataframe(
@@ -2238,7 +2329,8 @@ if view in ("멘토 포폴", "HS 포폴"):
                     "💡 **정렬**: 리밸런싱 금액 절대값 큰 순. 헤더 클릭하면 다른 기준으로 정렬 가능.  "
                     "**색상**: 🟢 매수 / 🔴 매도 / ⚪ 보유 (차이 ±₩100 이내).  "
                     "**괴리율** = 목표비중 − 현재비중 (퍼센트 포인트). 🔵 +면 매수 압력, 🟠 −면 매도 압력.  "
-                    "**리밸런싱 금액** = 목표 평가액 − 현재 평가액 (양수=매수, 음수=매도)"
+                    "**리밸런싱 금액** = 목표 평가액 − 현재 평가액 (양수=매수, 음수=매도).  "
+                    "**예수금 체크**: ✅ 매수 가능 / ⚠️ 그 계좌 가용현금 부족 (재배정 또는 매도 필요) / ➖ 매도/보유."
                 )
 
 # ---------------------------------------------------------
