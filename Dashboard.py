@@ -778,20 +778,25 @@ if view == "📓 작전 일지":
             return md_row.get(col) if col in md_row.index else None
 
         def _big_card(label, value, chg=None, suffix=''):
-            """큰 폰트 카드 (가격 + 변동률 옆에 크게)."""
+            """큰 폰트 + 테두리 카드 (라벨/가격/변동률 모두 큼직하게)."""
             if chg is None:
                 chg_html = ''
             else:
                 color = '#2e7d32' if not chg.startswith('-') else '#c62828'
                 arrow = '▲' if not chg.startswith('-') else '▼'
                 chg_html = (
-                    f"<span style='color:{color}; font-size:1.05rem; font-weight:600; "
-                    f"margin-left:10px; vertical-align:middle'>{arrow} {chg.lstrip('+-')}</span>"
+                    f"<span style='color:{color}; font-size:1.4rem; font-weight:700; "
+                    f"margin-left:14px; vertical-align:middle; white-space:nowrap'>"
+                    f"{arrow} {chg.lstrip('+-')}</span>"
                 )
             return (
-                f"<div style='line-height:1.25; margin-bottom:12px'>"
-                f"<div style='font-size:0.85rem; color:#666; margin-bottom:2px'>{label}</div>"
-                f"<div style='font-size:1.7rem; font-weight:700'>{value}{suffix}{chg_html}</div>"
+                f"<div style='"
+                f"border:1px solid #e0e3e7; border-radius:10px; "
+                f"padding:14px 18px; background:#ffffff; "
+                f"margin-bottom:12px; box-shadow:0 1px 2px rgba(0,0,0,0.04); "
+                f"line-height:1.25;'>"
+                f"<div style='font-size:1.5rem; color:#444; font-weight:500; margin-bottom:6px'>{label}</div>"
+                f"<div style='font-size:2.2rem; font-weight:700; color:#111'>{value}{suffix}{chg_html}</div>"
                 f"</div>"
             )
 
