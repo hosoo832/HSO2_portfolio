@@ -591,7 +591,7 @@ if view == "📓 작전 일지":
         sel_date = st.date_input("📅 일지 날짜", value=_date.today(), key="journal_date")
 
     # ---- journal_log 시트 헬퍼 ----
-    JOURNAL_HEADERS = ['date', 'updated_at', '경제지표', '시장이슈', '매매내역', '전투일지', '전투계획']
+    JOURNAL_HEADERS = ['date', 'updated_at', '시장요약', '경제지표', '시장이슈', '매매내역', '전투일지', '전투계획']
 
     @st.cache_data(ttl=30, show_spinner=False)
     def _load_journal_raw():
@@ -607,14 +607,67 @@ if view == "📓 작전 일지":
         return df
 
     def _ensure_journal_sheet():
-        """journal_log 시트 없으면 생성 + 헤더 입력. 있으면 worksheet 반환."""
+        """journal_log 시트 없으면 생성 + 헤더 입력. 있으면 worksheet 반환.
+        가독성 위한 포맷팅(wrap text, 컬럼 폭) 자동 적용."""
         gc = get_gspread_client()
         wb = gc.open(SHEET_NAME)
         try:
             ws = wb.worksheet("journal_log")
         except Exception:
-            ws = wb.add_worksheet(title="journal_log", rows="500", cols="10")
+            ws = wb.add_worksheet(title="journal_log", rows="500", cols="12")
             ws.append_row(JOURNAL_HEADERS, value_input_option='USER_ENTERED')
+
+        # 헤더 누락된 컬럼 보정 (구버전 → 시장요약 컬럼 신규 추가)
+        existing = ws.row_values(1)
+        if existing != JOURNAL_HEADERS:
+            try:
+                ws.update(range_name=f"A1:{chr(ord('A') + len(JOURNAL_HEADERS) - 1)}1",
+                          values=[JOURNAL_HEADERS], value_input_option='USER_ENTERED')
+            except Exception:
+                pass
+
+        # 가독성 포맷팅 (한 번만 적용해도 영구)
+        try:
+            sid = ws.id
+            requests = [
+                # 모든 텍스트 컬럼: wrap text + top-align
+                {"repeatCell": {
+                    "range": {"sheetId": sid, "startRowIndex": 1, "startColumnIndex": 0, "endColumnIndex": 8},
+                    "cell": {"userEnteredFormat": {"wrapStrategy": "WRAP", "verticalAlignment": "TOP"}},
+                    "fields": "userEnteredFormat(wrapStrategy,verticalAlignment)"
+                }},
+                # 헤더 행: bold + 배경
+                {"repeatCell": {
+                    "range": {"sheetId": sid, "startRowIndex": 0, "endRowIndex": 1},
+                    "cell": {"userEnteredFormat": {
+                        "textFormat": {"bold": True},
+                        "backgroundColor": {"red": 0.93, "green": 0.93, "blue": 0.95},
+                        "horizontalAlignment": "CENTER",
+                    }},
+                    "fields": "userEnteredFormat(textFormat,backgroundColor,horizontalAlignment)"
+                }},
+                # 컬럼 폭 — A:date 90, B:updated_at 130, C:시장요약 250, 나머지 텍스트 350
+                *[{"updateDimensionProperties": {
+                    "range": {"sheetId": sid, "dimension": "COLUMNS", "startIndex": i, "endIndex": i + 1},
+                    "properties": {"pixelSize": w},
+                    "fields": "pixelSize"
+                }} for i, w in enumerate([95, 145, 280, 280, 380, 380, 380, 380])],
+                # 데이터 행 높이: 자동(=내용에 맞춰 늘어남)
+                {"updateDimensionProperties": {
+                    "range": {"sheetId": sid, "dimension": "ROWS", "startIndex": 1, "endIndex": 500},
+                    "properties": {"pixelSize": 80},  # 기본 높이 80px (wrap 시 자동 확장)
+                    "fields": "pixelSize"
+                }},
+                # 헤더 freeze (스크롤해도 헤더 보임)
+                {"updateSheetProperties": {
+                    "properties": {"sheetId": sid, "gridProperties": {"frozenRowCount": 1}},
+                    "fields": "gridProperties.frozenRowCount"
+                }},
+            ]
+            wb.batch_update({"requests": requests})
+        except Exception:
+            pass  # 포맷팅 실패해도 저장은 계속
+
         return ws
 
     def _save_journal(date_str, fields):
@@ -639,6 +692,7 @@ if view == "📓 작전 일지":
         new_row = [
             date_str,
             datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            fields.get('시장요약', ''),
             fields.get('경제지표', ''),
             fields.get('시장이슈', ''),
             fields.get('매매내역', ''),
@@ -648,7 +702,7 @@ if view == "📓 작전 일지":
 
         if target_row_idx:
             # update existing
-            ws.update(range_name=f"A{target_row_idx}:G{target_row_idx}",
+            ws.update(range_name=f"A{target_row_idx}:H{target_row_idx}",
                       values=[new_row], value_input_option='USER_ENTERED')
             return 'updated'
         else:
@@ -708,6 +762,8 @@ if view == "📓 작전 일지":
         st.error(f"market_data 로드 실패: {e}")
         md_row = None
 
+    market_summary_lines = []  # journal_log 의 시장요약 컬럼에 저장
+
     if md_row is not None:
         def _fmt_v(v):
             if pd.isna(v): return '-'
@@ -715,51 +771,87 @@ if view == "📓 작전 일지":
             return f"{v:,.2f}"
 
         def _fmt_p(v):
-            if pd.isna(v): return '-'
+            if pd.isna(v): return None
             return f"{v:+.2f}%"
 
         def _row_idx(col):
             return md_row.get(col) if col in md_row.index else None
 
+        def _big_card(label, value, chg=None, suffix=''):
+            """큰 폰트 카드 (가격 + 변동률 옆에 크게)."""
+            if chg is None:
+                chg_html = ''
+            else:
+                color = '#2e7d32' if not chg.startswith('-') else '#c62828'
+                arrow = '▲' if not chg.startswith('-') else '▼'
+                chg_html = (
+                    f"<span style='color:{color}; font-size:1.05rem; font-weight:600; "
+                    f"margin-left:10px; vertical-align:middle'>{arrow} {chg.lstrip('+-')}</span>"
+                )
+            return (
+                f"<div style='line-height:1.25; margin-bottom:12px'>"
+                f"<div style='font-size:0.85rem; color:#666; margin-bottom:2px'>{label}</div>"
+                f"<div style='font-size:1.7rem; font-weight:700'>{value}{suffix}{chg_html}</div>"
+                f"</div>"
+            )
+
+        def _record_summary(label, value, chg):
+            """시장요약 텍스트 누적 (journal_log 저장용)."""
+            line = f"{label}: {value}"
+            if chg:
+                line += f" ({chg})"
+            market_summary_lines.append(line)
+
+        def _render(cols, items):
+            """items = [(label, price_col, chg_col, suffix?), ...]"""
+            for col_st, item in zip(cols, items):
+                label = item[0]
+                value_raw = _row_idx(item[1]) if item[1] else None
+                chg_raw = _row_idx(item[2]) if len(item) > 2 and item[2] else None
+                suffix = item[3] if len(item) > 3 else ''
+                value_str = _fmt_v(value_raw) if value_raw is not None else '-'
+                chg_str = _fmt_p(chg_raw)
+                col_st.markdown(_big_card(label, value_str, chg_str, suffix), unsafe_allow_html=True)
+                _record_summary(label, value_str + suffix, chg_str)
+
         # ─ 국내
         st.markdown("**🇰🇷 국내**")
-        col1, col2, col3 = st.columns(3)
-        col1.metric("KOSPI", _fmt_v(_row_idx('KOSPI_price')), _fmt_p(_row_idx('KOSPI_chg_pct')))
-        col2.metric("KOSDAQ", _fmt_v(_row_idx('KOSDAQ_price')), _fmt_p(_row_idx('KOSDAQ_chg_pct')))
-        col3.metric("KR 10Y 채권", _fmt_v(_row_idx('KR_10Y_Bond_rate')) + "%" if not pd.isna(_row_idx('KR_10Y_Bond_rate') or 0) else '-', None)
-
-        col4, col5, col6 = st.columns(3)
-        kospi_vol = _row_idx('KOSPI_volume')
-        kosdaq_vol = _row_idx('KOSDAQ_volume')
-        col4.metric("KOSPI 거래대금", f"{kospi_vol:,.0f} 억" if not pd.isna(kospi_vol or 0) else '-')
-        col5.metric("KOSDAQ 거래대금", f"{kosdaq_vol:,.0f} 억" if not pd.isna(kosdaq_vol or 0) else '-')
-        col6.metric("USD/KRW", _fmt_v(_row_idx('USDKRW_price')), _fmt_p(_row_idx('USDKRW_chg_pct')))
+        _render(st.columns(3), [
+            ('KOSPI', 'KOSPI_price', 'KOSPI_chg_pct'),
+            ('KOSDAQ', 'KOSDAQ_price', 'KOSDAQ_chg_pct'),
+            ('KR 10Y 채권', 'KR_10Y_Bond_rate', None, '%'),
+        ])
+        _render(st.columns(3), [
+            ('KOSPI 거래대금', 'KOSPI_volume', None, ' 억'),
+            ('KOSDAQ 거래대금', 'KOSDAQ_volume', None, ' 억'),
+            ('USD/KRW', 'USDKRW_price', 'USDKRW_chg_pct'),
+        ])
 
         # ─ 해외
         st.markdown("**🌐 해외**")
-        col7, col8, col9 = st.columns(3)
-        col7.metric("S&P 500", _fmt_v(_row_idx('SP500_price')), _fmt_p(_row_idx('SP500_chg_pct')))
-        col8.metric("NASDAQ", _fmt_v(_row_idx('NASDAQ_price')), _fmt_p(_row_idx('NASDAQ_chg_pct')))
-        col9.metric("Nikkei", _fmt_v(_row_idx('NIKKEI_price')), _fmt_p(_row_idx('NIKKEI_chg_pct')))
-
-        col10, col11, col12 = st.columns(3)
-        col10.metric("Shanghai", _fmt_v(_row_idx('SHANGHAI_price')), _fmt_p(_row_idx('SHANGHAI_chg_pct')))
-        col11.metric("DAX", _fmt_v(_row_idx('DAX_price')), _fmt_p(_row_idx('DAX_chg_pct')))
-        col12.metric("USD Index", _fmt_v(_row_idx('USD_IDX_price')), _fmt_p(_row_idx('USD_IDX_chg_pct')))
+        _render(st.columns(3), [
+            ('S&P 500', 'SP500_price', 'SP500_chg_pct'),
+            ('NASDAQ', 'NASDAQ_price', 'NASDAQ_chg_pct'),
+            ('Nikkei', 'NIKKEI_price', 'NIKKEI_chg_pct'),
+        ])
+        _render(st.columns(3), [
+            ('Shanghai', 'SHANGHAI_price', 'SHANGHAI_chg_pct'),
+            ('DAX', 'DAX_price', 'DAX_chg_pct'),
+            ('USD Index', 'USD_IDX_price', 'USD_IDX_chg_pct'),
+        ])
 
         # ─ 채권/원자재/변동성/크립토
         st.markdown("**📈 채권 / 원자재 / 변동성 / 크립토**")
-        col13, col14, col15 = st.columns(3)
-        us10 = _row_idx('US_10Y_Bond_rate')
-        us30 = _row_idx('US_30Y_Bond_rate')
-        col13.metric("US 10Y 채권", f"{us10:.2f}%" if not pd.isna(us10 or 0) else '-')
-        col14.metric("US 30Y 채권", f"{us30:.2f}%" if not pd.isna(us30 or 0) else '-')
-        col15.metric("VIX", _fmt_v(_row_idx('VIX_price')), _fmt_p(_row_idx('VIX_chg_pct')))
-
-        col16, col17, col18 = st.columns(3)
-        col16.metric("WTI", _fmt_v(_row_idx('WTI_price')), _fmt_p(_row_idx('WTI_chg_pct')))
-        col17.metric("Gold", _fmt_v(_row_idx('GOLD_price')), _fmt_p(_row_idx('GOLD_chg_pct')))
-        col18.metric("BTC", _fmt_v(_row_idx('BTC_price')), _fmt_p(_row_idx('BTC_chg_pct')))
+        _render(st.columns(3), [
+            ('US 10Y 채권', 'US_10Y_Bond_rate', None, '%'),
+            ('US 30Y 채권', 'US_30Y_Bond_rate', None, '%'),
+            ('VIX', 'VIX_price', 'VIX_chg_pct'),
+        ])
+        _render(st.columns(3), [
+            ('WTI', 'WTI_price', 'WTI_chg_pct'),
+            ('Gold', 'GOLD_price', 'GOLD_chg_pct'),
+            ('BTC', 'BTC_price', 'BTC_chg_pct'),
+        ])
 
     st.divider()
 
@@ -855,6 +947,7 @@ if view == "📓 작전 일지":
 
             try:
                 result = _save_journal(sel_date_str, {
+                    '시장요약': '\n'.join(market_summary_lines),
                     '경제지표': econ,
                     '시장이슈': issue,
                     '매매내역': trades_text,
