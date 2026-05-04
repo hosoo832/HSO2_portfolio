@@ -819,8 +819,15 @@ if view == "📓 작전 일지":
                 col_st.markdown(_big_card(label, value_str, chg_str, suffix), unsafe_allow_html=True)
                 _record_summary(label, value_str + suffix, chg_str)
 
+        def _section_header(text):
+            st.markdown(
+                f"<div style='margin: 32px 0 16px 0; font-size: 1.75rem; "
+                f"font-weight: 700; color: #222; line-height: 1.3;'>{text}</div>",
+                unsafe_allow_html=True
+            )
+
         # ─ 국내
-        st.markdown("**🇰🇷 국내**")
+        _section_header("🇰🇷 국내")
         _render(st.columns(3), [
             ('KOSPI', 'KOSPI_price', 'KOSPI_chg_pct'),
             ('KOSDAQ', 'KOSDAQ_price', 'KOSDAQ_chg_pct'),
@@ -833,7 +840,7 @@ if view == "📓 작전 일지":
         ])
 
         # ─ 해외
-        st.markdown("**🌐 해외**")
+        _section_header("🌐 해외")
         _render(st.columns(3), [
             ('S&P 500', 'SP500_price', 'SP500_chg_pct'),
             ('NASDAQ', 'NASDAQ_price', 'NASDAQ_chg_pct'),
@@ -846,7 +853,7 @@ if view == "📓 작전 일지":
         ])
 
         # ─ 채권/원자재/변동성/크립토
-        st.markdown("**📈 채권 / 원자재 / 변동성 / 크립토**")
+        _section_header("📈 채권 / 원자재 / 변동성 / 크립토")
         _render(st.columns(3), [
             ('US 10Y 채권', 'US_10Y_Bond_rate', None, '%'),
             ('US 30Y 채권', 'US_30Y_Bond_rate', None, '%'),
