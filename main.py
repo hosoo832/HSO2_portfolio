@@ -254,6 +254,19 @@ def main_run():
                 mentor_acc_cash = df_mentor[_is_cash_m].groupby('account')['market_value_krw'].sum().to_dict()
                 hs_acc_cash = df_hs[_is_cash_h].groupby('account')['market_value_krw'].sum().to_dict()
 
+                # 4.6 [v126 신규] 계좌별 target_ratio 합 (Y 컬럼 over/under 계산용)
+                # df_target 의 H 열을 사전 한 번 파싱
+                def _parse_pct(s):
+                    try:
+                        return float(str(s).replace('%', '').strip()) / 100.0
+                    except:
+                        return 0.0
+                acc_target_sum = {}
+                for _, _row in df_target.iterrows():
+                    _acc = str(_row.get('account', '')).strip()
+                    if _acc:
+                        acc_target_sum[_acc] = acc_target_sum.get(_acc, 0.0) + _parse_pct(_row.get('target_ratio', '0'))
+
                 cells_to_update = []
 
                 # 5. 각 행(종목)별 비중 순회 및 계산
@@ -293,12 +306,14 @@ def main_run():
                     # [v126 신규] W/X/Y 열: 계좌 capacity 정보
                     # W (23): 계좌 AUM 비중 = 이 계좌가 그룹 AUM 의 몇 % (= 단일종목 절대 max)
                     # X (24): 계좌 가용현금 비중 = 추가 매수 capacity (% of group AUM)
-                    # Y (25): 이 종목에 줄 수 있는 max target_ratio
-                    #         = (현재 종목 평가액 + 계좌 가용현금) / 그룹 AUM
-                    #         → target_ratio > Y 이면 매수 불가능 (예수금 부족)
+                    # Y (25): 계좌별 target_ratio 합 − 계좌 AUM 비중 (over/under, 같은 계좌는 동일 값)
+                    #         + 양수: target 합이 계좌 capacity 초과 → 빼야 함
+                    #         - 음수: target 합이 계좌 capacity 미달 → 더 채울 수 있음
+                    #         0: 정확히 일치
                     acc_aum_ratio  = float((acc_aum / total_mv) if total_mv > 0 else 0.0)
                     acc_cash_ratio = float((acc_cash / total_mv) if total_mv > 0 else 0.0)
-                    max_target_ratio = float(((t_mv + acc_cash) / total_mv) if total_mv > 0 else 0.0)
+                    target_sum_acc = acc_target_sum.get(acc, 0.0)
+                    over_under = float(target_sum_acc - acc_aum_ratio)
 
                     # I열(9), J열(10)에 순수 숫자(Float) 값 적재
                     cells_to_update.append(gspread.Cell(sheet_row, 9, actual_ratio))
@@ -306,7 +321,7 @@ def main_run():
                     # W(23), X(24), Y(25) 열 — 모두 decimal 형태 (시트에서 % 서식 적용 시 자동 환산)
                     cells_to_update.append(gspread.Cell(sheet_row, 23, acc_aum_ratio))
                     cells_to_update.append(gspread.Cell(sheet_row, 24, acc_cash_ratio))
-                    cells_to_update.append(gspread.Cell(sheet_row, 25, max_target_ratio))
+                    cells_to_update.append(gspread.Cell(sheet_row, 25, over_under))
 
                 # 5.5 [v126] W/X/Y 헤더 자동 작성 (한 번만 — 비어 있을 때)
                 try:
@@ -318,14 +333,14 @@ def main_run():
                     cells_to_update.extend([
                         gspread.Cell(1, 23, '계좌 AUM (%)'),
                         gspread.Cell(1, 24, '계좌 가용현금 (%)'),
-                        gspread.Cell(1, 25, '매수가능 max (%)'),
+                        gspread.Cell(1, 25, '계좌별 target 초과/여유 (%p)'),
                     ])
 
                 # 6. 구글 시트로 한 번에 쏘기 (성능 최적화)
                 if cells_to_update:
                     target_sheet_instance.update_cells(cells_to_update)
                     print("  [MAIN] 구글 시트 I/J/W/X/Y 열 일괄 업데이트 완료! ✅")
-                    print("        (I=Actual_Ratio, J=Drift, W=계좌AUM%, X=계좌가용현금%, Y=매수가능max%)")
+                    print("        (I=Actual_Ratio, J=Drift, W=계좌AUM%, X=계좌가용현금%, Y=계좌별 target 초과/여유%p)")
             else:
                 print("  [!] 타겟 시트를 찾을 수 없거나 데이터가 비어있습니다.")
         except Exception as e:

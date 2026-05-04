@@ -2103,8 +2103,9 @@ if view in ("멘토 포폴", "HS 포폴"):
                       delta_color="off")
             s4.metric("총 종목 수", f"{len(df_rb)}개")
 
-            # ---- [v75.x] 계좌별 Capacity 요약 (현금격벽 인지) ----
-            # dashboard_data 에서 계좌별 AUM / 가용현금 + rebalancing_data 에서 계좌별 매수필요 합산
+            # ---- [v75.x] 계좌별 Capacity 요약 — target 비중 균형 관점 ----
+            # 계좌마다 target_ratio 합이 그 계좌의 AUM 비중 (W) 와 얼마나 차이나는지가 핵심.
+            # 현금 추가 가정 안 함 (퇴직연금 등 입금 불가 계좌 포함).
             try:
                 df_dv = df_dashboard[df_dashboard['account_clean'].isin(target_accounts)].copy()
                 if not df_dv.empty and 'market_value_krw' in df_dv.columns:
@@ -2114,51 +2115,77 @@ if view in ("멘토 포폴", "HS 포폴"):
                     is_cash = df_dv['ticker'].astype(str).str.startswith('CASH')
                     cash_per_acc = df_dv[is_cash].groupby('account_clean')['market_value_krw'].sum()
                     aum_per_acc = df_dv.groupby('account_clean')['market_value_krw'].sum()
-                    buy_per_acc = df_rb[df_rb['rebalancing_value_krw'] > 0].groupby('_acc_clean')['rebalancing_value_krw'].sum()
+                    target_sum_per_acc = df_rb.groupby('_acc_clean')['target_ratio'].sum()
 
                     cap_rows = []
                     for acc in sorted(target_accounts):
                         a_aum = aum_per_acc.get(acc, 0)
                         a_cash = cash_per_acc.get(acc, 0)
-                        a_buy = buy_per_acc.get(acc, 0)
-                        shortage = max(0, a_buy - a_cash)
+                        w_pct = (a_aum / group_aum * 100) if group_aum > 0 else 0  # 계좌 AUM 비중
+                        cash_pct = (a_cash / group_aum * 100) if group_aum > 0 else 0
+                        target_sum = float(target_sum_per_acc.get(acc, 0))  # 계좌별 target 합
+                        diff = target_sum - w_pct  # +면 초과, -면 여유
+
+                        if diff > 0.5:
+                            status = '⚠️ 초과'
+                        elif diff < -0.5:
+                            status = '🟡 여유'
+                        else:
+                            status = '✅ 균형'
+
                         cap_rows.append({
                             '계좌': acc,
                             'AUM': a_aum,
-                            '그룹비중%': (a_aum / group_aum * 100) if group_aum > 0 else 0,
+                            '계좌 AUM %': w_pct,
                             '가용현금': a_cash,
-                            '매수필요(합)': a_buy,
-                            '부족액': shortage,
-                            '상태': '⚠️ 예수금 부족' if shortage > 100 else '✅' if a_buy > 100 else '➖',
+                            '가용현금 %': cash_pct,
+                            'target 합 %': target_sum,
+                            '초과/여유 %p': diff,
+                            '상태': status,
                         })
                     cap_df = pd.DataFrame(cap_rows)
 
-                    with st.expander("💼 계좌별 Capacity & 예수금 점검", expanded=any(r['부족액'] > 100 for r in cap_rows)):
+                    expand_default = any(r['초과/여유 %p'] > 0.5 for r in cap_rows)
+                    with st.expander("💼 계좌별 비중 균형 점검", expanded=expand_default):
+                        def _color_status(v):
+                            s = str(v)
+                            if '초과' in s:
+                                return 'background-color: #ffebee; color: #b71c1c; font-weight: 600'
+                            if '여유' in s:
+                                return 'background-color: #fff8e1; color: #e65100'
+                            if '균형' in s:
+                                return 'background-color: #e8f5e9; color: #1b5e20'
+                            return ''
+
+                        def _color_diff(v):
+                            try:
+                                vv = float(v)
+                                if vv > 0.5:
+                                    return 'color: #b71c1c; font-weight: 600'
+                                elif vv < -0.5:
+                                    return 'color: #e65100; font-weight: 600'
+                            except: pass
+                            return ''
+
                         styled_cap = (
                             cap_df.style
                             .format({
                                 'AUM': '₩{:,.0f}',
-                                '그룹비중%': '{:.1f}%',
+                                '계좌 AUM %': '{:.1f}%',
                                 '가용현금': '₩{:,.0f}',
-                                '매수필요(합)': '₩{:,.0f}',
-                                '부족액': '₩{:,.0f}',
+                                '가용현금 %': '{:.1f}%',
+                                'target 합 %': '{:.2f}%',
+                                '초과/여유 %p': '{:+.2f}%p',
                             })
-                            .map(
-                                lambda v: 'background-color: #ffebee; color: #b71c1c; font-weight: 600' if v == '⚠️ 예수금 부족' else (
-                                    'background-color: #e8f5e9; color: #1b5e20' if v == '✅' else ''
-                                ),
-                                subset=['상태'],
-                            )
-                            .map(
-                                lambda v: 'color: #b71c1c; font-weight: 600' if isinstance(v, (int, float)) and v > 100 else '',
-                                subset=['부족액'],
-                            )
+                            .map(_color_status, subset=['상태'])
+                            .map(_color_diff, subset=['초과/여유 %p'])
                         )
                         st.dataframe(styled_cap, use_container_width=True, hide_index=True)
                         st.caption(
-                            "💡 **부족액** = 매수필요(합) − 가용현금. 양수면 그 계좌의 매수 일부가 불가능 → "
-                            "다른 계좌로 종목 재배정 또는 매도 후 매수로 자금 마련 필요. "
-                            "**그룹비중%** = 해당 계좌가 그룹 AUM 에서 차지하는 비중 (= 그 계좌의 단일종목 절대 max)."
+                            "💡 **초과/여유** = (그 계좌 종목들의 target_ratio 합) − (계좌 AUM %).  "
+                            "**+ 양수 (⚠️ 초과)**: 이 계좌에 너무 많이 줬음 → target 줄이거나 종목을 다른 계좌로 재배정.  "
+                            "**− 음수 (🟡 여유)**: 더 채울 수 있음.  "
+                            "**0 근처 (✅ 균형)**: 적정 배분."
                         )
             except Exception as _e:
                 st.caption(f"⚠️ 계좌별 capacity 계산 실패: {_e}")
@@ -2223,8 +2250,9 @@ if view in ("멘토 포폴", "HS 포폴"):
                 # 괴리율 (Drift) = 목표비중 - 현재비중 (퍼센트 포인트)
                 df_show['drift'] = df_show['target_ratio'].fillna(0) - df_show['current_ratio'].fillna(0)
 
-                # [v75.x] 예수금 체크: 이 row 의 매수가 그 계좌의 가용현금 안에서 가능한가?
+                # [v75.x] 매수 즉시성 체크: 이 row 의 매수가 그 계좌의 가용현금 안에서 즉시 가능한가?
                 # cash_per_acc 는 위 capacity 섹션에서 계산됨 — 안전하게 fallback
+                # 메시지 framing: "현금 부족" 이 아니라 "매도 후 가능" — 외부 자금 추가 가정 안 함
                 try:
                     _cash_lookup = cash_per_acc.to_dict() if 'cash_per_acc' in dir() else {}
                 except Exception:
@@ -2237,9 +2265,9 @@ if view in ("멘토 포폴", "HS 포폴"):
                     acc = clean_account(r.get('account', ''))
                     cash = _cash_lookup.get(acc, 0)
                     if rb <= cash:
-                        return '✅'
-                    short = rb - cash
-                    return f'⚠️ 부족 ₩{short:,.0f}'
+                        return '✅ 즉시'
+                    need = rb - cash
+                    return f'⚠️ 매도 후 (₩{need:,.0f})'
 
                 df_show['cash_check'] = df_show.apply(_capacity_status, axis=1)
 
@@ -2328,9 +2356,9 @@ if view in ("멘토 포폴", "HS 포폴"):
                 st.caption(
                     "💡 **정렬**: 리밸런싱 금액 절대값 큰 순. 헤더 클릭하면 다른 기준으로 정렬 가능.  "
                     "**색상**: 🟢 매수 / 🔴 매도 / ⚪ 보유 (차이 ±₩100 이내).  "
-                    "**괴리율** = 목표비중 − 현재비중 (퍼센트 포인트). 🔵 +면 매수 압력, 🟠 −면 매도 압력.  "
+                    "**괴리율** = 목표비중 − 현재비중 (%p). 🔵 +면 매수 압력, 🟠 −면 매도 압력.  "
                     "**리밸런싱 금액** = 목표 평가액 − 현재 평가액 (양수=매수, 음수=매도).  "
-                    "**예수금 체크**: ✅ 매수 가능 / ⚠️ 그 계좌 가용현금 부족 (재배정 또는 매도 필요) / ➖ 매도/보유."
+                    "**예수금 체크**: ✅ 즉시 매수 가능 / ⚠️ 같은 계좌의 다른 종목 매도 후 가능 (필요 현금 표시) / ➖ 매도·보유."
                 )
 
 # ---------------------------------------------------------
