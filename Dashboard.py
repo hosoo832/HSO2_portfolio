@@ -20,7 +20,14 @@
 
 import re
 import time
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
+
+# KST (UTC+9) — Streamlit Cloud 서버는 UTC 라 명시적 변환 필요
+KST = timezone(timedelta(hours=9))
+
+def now_kst():
+    """현재 한국 시각."""
+    return datetime.now(KST)
 
 import gspread
 import pandas as pd
@@ -266,7 +273,7 @@ with st.sidebar:
         st.cache_data.clear()
         st.rerun()
 
-    st.caption(f"마지막 로드: {datetime.now().strftime('%H:%M:%S')}")
+    st.caption(f"마지막 로드: {now_kst().strftime('%H:%M:%S KST')}")
     st.caption("Phase 1 (Hero + 비중 + 단기)")
 
 # ---------------------------------------------------------
@@ -691,7 +698,7 @@ if view == "📓 작전 일지":
 
         new_row = [
             date_str,
-            datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            now_kst().strftime('%Y-%m-%d %H:%M:%S'),
             fields.get('시장요약', ''),
             fields.get('경제지표', ''),
             fields.get('시장이슈', ''),
@@ -986,7 +993,7 @@ if view == "📓 작전 일지":
 if view == "💼 장중 실시간":
     st.title("💼 장중 실시간 수익률")
     st.caption(
-        f"갱신 시각: {datetime.now().strftime('%H:%M:%S KST')} · "
+        f"갱신 시각: {now_kst().strftime('%H:%M:%S KST')} · "
         "최신 가격 보려면 페이지 새로고침 또는 사이드바 *🔄 데이터 새로고침* 클릭"
     )
 
@@ -1463,7 +1470,7 @@ month_cols_kpi = sorted([c for c in df_perf.columns if re.match(r'^\d{4}-\d{2}$'
 if month_cols_kpi:
     _kpi_year = month_cols_kpi[-1].split('-')[0]
 else:
-    _kpi_year = str(datetime.now().year)
+    _kpi_year = str(now_kst().year)
 
 st.subheader(f"🎯 {_kpi_year} 연간 KPI 진행")
 
