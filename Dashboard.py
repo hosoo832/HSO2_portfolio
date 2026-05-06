@@ -2378,8 +2378,10 @@ if view == "HS 포폴":
     st.divider()
     st.subheader("🛡️ 퇴직연금 가드")
     st.caption(
-        "**규제**: 위험자산 ≤ 70% / 안전자산 ≥ 30% (계좌 단위). "
-        "분류: 위험 = 채권혼합·안전자산·방위군 외 모든 종목 / 안전 = 채권혼합 + 안전자산 (현금 포함)"
+        "**규제**: 위험자산 ≤ 70% / 안전자산 ≥ 30% (계좌 단위).  \n"
+        "**분류 (한국 퇴직연금 규정)**:  \n"
+        "• **위험** = 일반 주식 + 방위군 (인버스/VIX) + 채권혼합 ETF 의 30%  \n"
+        "• **안전** = 순수 채권/국채 ETF + 현금 + MMF + 채권혼합 ETF 의 70%"
     )
 
     pension_rows = []
@@ -2390,13 +2392,43 @@ if view == "HS 포폴":
 
         themes = sub.get('theme', pd.Series([''] * len(sub))).astype(str).str.strip()
         positions = sub.get('postion', pd.Series([''] * len(sub))).astype(str).str.strip()
+        names = sub.get('name', pd.Series([''] * len(sub))).astype(str)
+        tickers = sub.get('ticker', pd.Series([''] * len(sub))).astype(str)
 
-        is_safe = (themes == '채권혼합') | (themes == '안전 자산')
+        # [v75.x 수정] theme_remap 후 '채권혼합' 라벨이 사라져서 이름 기반 판별로 전환
+        # 한국 퇴직연금 규제 반영: 채권혼합 ETF 는 30% 위험 + 70% 안전 으로 split
+
+        # 채권혼합 ETF (이름에 '채권혼합' 포함) — 30/70 split 대상
+        is_bond_mix = names.str.contains('채권혼합', regex=False, na=False)
+
+        # 100% 안전자산: 순수 채권 ETF (채권혼합 제외) + 국채 + MMF + 현금 + 명시적 안전
+        is_pure_safe = (
+            (names.str.contains('채권', regex=False, na=False) & ~is_bond_mix) |
+            names.str.contains('국채', regex=False, na=False) |
+            names.str.contains('MMF', regex=False, na=False) |
+            (themes == '안전 자산') |
+            tickers.str.startswith('CASH')
+        )
+
+        # 방위군 (인버스/VIX 등) — 한국 퇴직연금 규제상 100% 위험자산으로 카운트
         is_hedge = (positions == '방위군')
-        is_risk = ~is_safe & ~is_hedge
 
-        risk_mv = sub.loc[is_risk, 'market_value_krw'].sum()
-        safe_mv = sub.loc[is_safe, 'market_value_krw'].sum()
+        # 100% 위험자산: 위 카테고리에 안 들어간 일반 주식
+        is_pure_risk = ~is_pure_safe & ~is_bond_mix & ~is_hedge
+
+        bond_mix_mv = sub.loc[is_bond_mix, 'market_value_krw'].sum()
+
+        # 위험자산 = 순수 위험 + 방위군 + 채권혼합의 30%
+        risk_mv = (
+            sub.loc[is_pure_risk, 'market_value_krw'].sum()
+            + sub.loc[is_hedge, 'market_value_krw'].sum()
+            + bond_mix_mv * 0.30
+        )
+        # 안전자산 = 순수 안전 + 채권혼합의 70%
+        safe_mv = (
+            sub.loc[is_pure_safe, 'market_value_krw'].sum()
+            + bond_mix_mv * 0.70
+        )
         hedge_mv = sub.loc[is_hedge, 'market_value_krw'].sum()
         total_mv = sub['market_value_krw'].sum()
 
