@@ -2691,6 +2691,7 @@ if view in ("멘토 포폴", "HS 포폴"):
                     '괴리율': df_show['drift'],
                     '매매 필요수량': df_show['rebalancing_quantity'],
                     '리밸런싱 금액': df_show['rebalancing_value_krw'],
+                    '목표 평가액': df_show['target_value_krw'],
                     '예수금 체크': df_show['cash_check'],
                 })
 
@@ -2745,6 +2746,7 @@ if view in ("멘토 포폴", "HS 포폴"):
                         '괴리율': '{:+.2f}%p',
                         '매매 필요수량': '{:+,.0f}',
                         '리밸런싱 금액': '₩{:+,.0f}',
+                        '목표 평가액': '₩{:,.0f}',
                     })
                     .map(color_action, subset=['리밸런싱 금액', '매매 필요수량'])
                     .map(color_drift, subset=['괴리율'])
