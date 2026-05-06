@@ -1,0 +1,48 @@
+# 절대 GitHub 에 올라가면 안 되는 비밀 파일
+service_account.json
+.streamlit/secrets.toml
+.env
+*.key
+*.pem
+
+# Python 캐시
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+env/
+
+# 운영체제
+.DS_Store
+Thumbs.db
+
+# 에디터
+.vscode/
+.idea/
+*.swp
+
+# 임시 / 로그
+*.log
+backfill_output.txt
+debug_*.txt
+
+# 민감 정보 (API 키 등)
+ECOS API.txt
+*api*key*.txt
+
+# 큰 CSV / 백업 (GitHub 에 올릴 필요 없음)
+portfolio_backfill_data.csv
+theme_backup_*.csv
+
+# 일회성 / 디버그 스크립트 (GitHub Actions 에서 안 씀)
+debug_*.py
+check_*.py
+test_naver.py
+find_keyword.py
+ecos_explore.py
+ecos_explore_2.py
+ecos_explore_3.py
+pykrx_diagnose.py
+pykrx_volume_test.py
+theme_remap.py
