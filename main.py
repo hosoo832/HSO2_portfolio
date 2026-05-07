@@ -310,19 +310,29 @@ def main_run():
                         return 1.0
                     return 1.0  # 빈칸/미인식 = 보수적으로 위험
 
-                # 퇴직연금 계좌별 (target_ratio × risk_ratio) 합 계산 — group AUM 비중 단위
-                pension_target_risk_sum = {acc: 0.0 for acc in PENSION_ACCS}
-                for _, _row in df_target.iterrows():
-                    _acc = str(_row.get('account', '')).strip()
+                # 퇴직연금 계좌별 현재 위험자산 평가액 계산 (CURRENT 기준 — 규제 체크용)
+                # df_dashboard_final 의 모든 보유 종목 순회 (rebalancing_master 에 없는 것도 포함)
+                pension_current_risk_mv = {acc: 0.0 for acc in PENSION_ACCS}
+                pension_current_total_mv = {acc: 0.0 for acc in PENSION_ACCS}
+                for _, _r in df_dashboard_final.iterrows():
+                    _acc = str(_r.get('account', '')).strip()
                     if _acc not in PENSION_ACCS:
                         continue
-                    _ticker = str(_row.get('ticker', '')).strip()
-                    if not _ticker:
-                        continue
-                    _t_ratio = _parse_pct(_row.get('target_ratio', '0'))
+                    _ticker = str(_r.get('ticker', '')).strip()
+                    _mv = float(_r.get('market_value_krw') or 0)
                     _pc = pension_class_lookup.get(_ticker, '')
                     _risk = _risk_ratio_from_pc(_pc, _ticker)
-                    pension_target_risk_sum[_acc] += _t_ratio * _risk
+                    pension_current_risk_mv[_acc] += _mv * _risk
+                    pension_current_total_mv[_acc] += _mv
+
+                # 계좌별 현재 위험% (pension regulation 기준)
+                pension_current_risk_pct = {}
+                for _acc in PENSION_ACCS:
+                    _total = pension_current_total_mv[_acc]
+                    if _total > 0:
+                        pension_current_risk_pct[_acc] = pension_current_risk_mv[_acc] / _total
+                    else:
+                        pension_current_risk_pct[_acc] = 0.0
 
                 cells_to_update = []
 
@@ -380,11 +390,10 @@ def main_run():
                     cells_to_update.append(gspread.Cell(sheet_row, 24, acc_cash_ratio))
                     cells_to_update.append(gspread.Cell(sheet_row, 25, over_under))
 
-                    # Z(26) 퇴직연금 위험% (target 기준) — 퇴직연금 계좌만, 비퇴직연금은 빈칸
-                    if acc in PENSION_ACCS and acc_aum_ratio > 0:
-                        # 위험% = sum(target × risk) / 계좌 AUM 비중
-                        pension_risk_pct = pension_target_risk_sum[acc] / acc_aum_ratio
-                        cells_to_update.append(gspread.Cell(sheet_row, 26, pension_risk_pct))
+                    # Z(26) 퇴직연금 위험% (현재 시점 — 규제 체크용)
+                    # 동일 계좌 내 모든 행에 같은 값. 비퇴직연금은 빈칸.
+                    if acc in PENSION_ACCS:
+                        cells_to_update.append(gspread.Cell(sheet_row, 26, pension_current_risk_pct.get(acc, 0.0)))
                     else:
                         cells_to_update.append(gspread.Cell(sheet_row, 26, ''))
 
@@ -399,7 +408,7 @@ def main_run():
                         gspread.Cell(1, 23, '계좌 AUM (%)'),
                         gspread.Cell(1, 24, '계좌 가용현금 (%)'),
                         gspread.Cell(1, 25, '계좌별 target 초과/여유 (%p)'),
-                        gspread.Cell(1, 26, '퇴직연금 위험% (target)'),
+                        gspread.Cell(1, 26, '퇴직연금 위험% (현재)'),
                     ])
 
                 # 6. 구글 시트로 한 번에 쏘기 (성능 최적화)
@@ -407,7 +416,7 @@ def main_run():
                     target_sheet_instance.update_cells(cells_to_update)
                     print("  [MAIN] 구글 시트 I/J/W/X/Y/Z 열 일괄 업데이트 완료! ✅")
                     print("        (I=Actual_Ratio, J=Drift, W=계좌AUM%, X=계좌가용현금%,")
-                    print("         Y=계좌별 target 초과/여유%p, Z=퇴직연금 위험% (target))")
+                    print("         Y=계좌별 target 초과/여유%p, Z=퇴직연금 위험% (현재))")
             else:
                 print("  [!] 타겟 시트를 찾을 수 없거나 데이터가 비어있습니다.")
         except Exception as e:
