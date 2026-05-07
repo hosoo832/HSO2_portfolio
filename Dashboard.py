@@ -2396,10 +2396,19 @@ if view == "HS 포폴":
     def _classify_pension(pc, name, theme, position, ticker):
         """우선순위: pension_class 명시 > 이름/테마 기반 fallback.
         반환값: '안전' / '채권혼합' / '헷지' / '위험'
+        다양한 표기 수용 (예: '채권', '국채', '현금' → '안전')
         """
         pc = (pc or '').strip()
-        if pc in ('안전', '채권혼합', '헷지', '위험'):
-            return pc
+        # 명시값 다양한 표기 매핑
+        SAFE = {'안전', '안전자산', '채권', '국채', 'MMF', '현금'}
+        BOND_MIX = {'채권혼합', '혼합'}
+        HEDGE = {'헷지', '인버스', 'VIX', '레버리지'}
+        RISK = {'위험', '주식', '공격'}
+        if pc in SAFE: return '안전'
+        if pc in BOND_MIX: return '채권혼합'
+        if pc in HEDGE: return '헷지'
+        if pc in RISK: return '위험'
+
         # Fallback (master_data 의 pension_class 가 비어있을 때만)
         nm = name or ''
         if '채권혼합' in nm:
