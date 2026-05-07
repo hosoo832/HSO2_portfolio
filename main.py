@@ -267,6 +267,63 @@ def main_run():
                     if _acc:
                         acc_target_sum[_acc] = acc_target_sum.get(_acc, 0.0) + _parse_pct(_row.get('target_ratio', '0'))
 
+                # 4.7 [v127 신규] 퇴직연금 위험비중 사전 계산 (Z 열 — target 기준)
+                # master_data 의 pension_class 룩업
+                PENSION_ACCS = ['220914426167', '717190227129']
+                pension_class_lookup = {}
+                if not df_master.empty and 'pension_class' in df_master.columns:
+                    pension_class_lookup = dict(zip(
+                        df_master['ticker'].astype(str).str.strip(),
+                        df_master['pension_class'].astype(str).str.strip()
+                    ))
+
+                def _risk_ratio_from_pc(pc, ticker):
+                    """pension_class 값 → 위험비중 (0.0~1.0). Dashboard.py 와 동일 로직."""
+                    if (ticker or '').startswith('CASH'):
+                        return 0.0
+                    pc = (pc or '').strip()
+                    # 순수 숫자
+                    try:
+                        v = float(pc)
+                        if 0 <= v <= 100:
+                            return v / 100
+                    except ValueError:
+                        pass
+                    # 라벨+숫자 (예: 채권혼합20)
+                    for prefix in ('채권혼합', '혼합'):
+                        if pc.startswith(prefix) and len(pc) > len(prefix):
+                            rest = pc[len(prefix):].strip()
+                            try:
+                                v = float(rest)
+                                if 0 <= v <= 100:
+                                    return v / 100
+                            except ValueError:
+                                pass
+                    # 라벨
+                    if pc in {'안전', '안전자산', '채권', '국채', 'MMF', '현금'}:
+                        return 0.0
+                    if pc in {'채권혼합', '혼합'}:
+                        return 0.0  # 한국 규정상 100% 안전
+                    if pc in {'헷지', '인버스', 'VIX', '레버리지'}:
+                        return 1.0
+                    if pc in {'위험', '주식', '공격'}:
+                        return 1.0
+                    return 1.0  # 빈칸/미인식 = 보수적으로 위험
+
+                # 퇴직연금 계좌별 (target_ratio × risk_ratio) 합 계산 — group AUM 비중 단위
+                pension_target_risk_sum = {acc: 0.0 for acc in PENSION_ACCS}
+                for _, _row in df_target.iterrows():
+                    _acc = str(_row.get('account', '')).strip()
+                    if _acc not in PENSION_ACCS:
+                        continue
+                    _ticker = str(_row.get('ticker', '')).strip()
+                    if not _ticker:
+                        continue
+                    _t_ratio = _parse_pct(_row.get('target_ratio', '0'))
+                    _pc = pension_class_lookup.get(_ticker, '')
+                    _risk = _risk_ratio_from_pc(_pc, _ticker)
+                    pension_target_risk_sum[_acc] += _t_ratio * _risk
+
                 cells_to_update = []
 
                 # 5. 각 행(종목)별 비중 순회 및 계산
@@ -323,24 +380,34 @@ def main_run():
                     cells_to_update.append(gspread.Cell(sheet_row, 24, acc_cash_ratio))
                     cells_to_update.append(gspread.Cell(sheet_row, 25, over_under))
 
-                # 5.5 [v126] W/X/Y 헤더 자동 작성 (한 번만 — 비어 있을 때)
+                    # Z(26) 퇴직연금 위험% (target 기준) — 퇴직연금 계좌만, 비퇴직연금은 빈칸
+                    if acc in PENSION_ACCS and acc_aum_ratio > 0:
+                        # 위험% = sum(target × risk) / 계좌 AUM 비중
+                        pension_risk_pct = pension_target_risk_sum[acc] / acc_aum_ratio
+                        cells_to_update.append(gspread.Cell(sheet_row, 26, pension_risk_pct))
+                    else:
+                        cells_to_update.append(gspread.Cell(sheet_row, 26, ''))
+
+                # 5.5 [v126/v127] W/X/Y/Z 헤더 자동 작성 (한 번만 — 비어 있을 때)
                 try:
-                    header_cells = target_sheet_instance.batch_get(['W1:Y1'])
+                    header_cells = target_sheet_instance.batch_get(['W1:Z1'])
                     existing_headers = header_cells[0][0] if header_cells and header_cells[0] else []
                 except Exception:
                     existing_headers = []
-                if not existing_headers or any((c or '').strip() == '' for c in existing_headers + [''] * (3 - len(existing_headers))):
+                if not existing_headers or any((c or '').strip() == '' for c in existing_headers + [''] * (4 - len(existing_headers))):
                     cells_to_update.extend([
                         gspread.Cell(1, 23, '계좌 AUM (%)'),
                         gspread.Cell(1, 24, '계좌 가용현금 (%)'),
                         gspread.Cell(1, 25, '계좌별 target 초과/여유 (%p)'),
+                        gspread.Cell(1, 26, '퇴직연금 위험% (target)'),
                     ])
 
                 # 6. 구글 시트로 한 번에 쏘기 (성능 최적화)
                 if cells_to_update:
                     target_sheet_instance.update_cells(cells_to_update)
-                    print("  [MAIN] 구글 시트 I/J/W/X/Y 열 일괄 업데이트 완료! ✅")
-                    print("        (I=Actual_Ratio, J=Drift, W=계좌AUM%, X=계좌가용현금%, Y=계좌별 target 초과/여유%p)")
+                    print("  [MAIN] 구글 시트 I/J/W/X/Y/Z 열 일괄 업데이트 완료! ✅")
+                    print("        (I=Actual_Ratio, J=Drift, W=계좌AUM%, X=계좌가용현금%,")
+                    print("         Y=계좌별 target 초과/여유%p, Z=퇴직연금 위험% (target))")
             else:
                 print("  [!] 타겟 시트를 찾을 수 없거나 데이터가 비어있습니다.")
         except Exception as e:
