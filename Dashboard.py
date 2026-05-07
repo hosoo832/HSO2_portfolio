@@ -2379,11 +2379,12 @@ if view == "HS 포폴":
     st.subheader("🛡️ 퇴직연금 가드")
     st.caption(
         "**규제**: 위험자산 ≤ 70% / 안전자산 ≥ 30% (분모 = 계좌 AUM 전체, 현금 포함).  \n"
-        "**위험비중 (한국 퇴직연금 규정)**:  \n"
-        "• 일반 주식 / 헷지 (인버스·VIX): **100% 위험**  \n"
-        "• 채권혼합 ETF (주식 ≤ 40%): **0% 위험** (= 100% 안전)  \n"
-        "• 순수 채권/국채/MMF/현금: **0% 위험**  \n"
-        "💡 예외 (주식 비중 >40%인 채권혼합) 만 master_data 의 `pension_class` 에 숫자 override (예: `채권혼합50`, `45`)"
+        "**분류 규칙**: master_data 시트의 `pension_class` 컬럼 명시값 사용. **빈칸 = 위험 (기본값)**.  \n"
+        "• `안전`/`채권`/`국채`/`MMF` → 0% 위험  \n"
+        "• `채권혼합` → 0% 위험 (한국 규정상 100% 안전, 주식 ≤40%)  \n"
+        "• `헷지`/`위험`/빈칸 → 100% 위험  \n"
+        "• 숫자 직접 입력 가능 (예: `15` → 15% 위험, `채권혼합50` → 채권혼합 50%)  \n"
+        "• 현금 (CASH) 은 시스템상 자동으로 안전"
     )
 
     # [v75.x] master_data 의 pension_class 컬럼 룩업 (명시적 분류 우선)
@@ -2396,8 +2397,12 @@ if view == "HS 포폴":
 
     def _classify_pension(pc, name, theme, position, ticker):
         """반환값: (분류명, 위험비중 0.0~1.0) 튜플.
-        우선순위: pc 숫자 > pc 라벨+숫자 (채권혼합20) > pc 라벨 > 이름 fallback.
+        우선순위: 현금(시스템) > pc 숫자 > pc 라벨+숫자 > pc 라벨 > 빈칸=위험.
         """
+        # 0) CASH 시스템 row 는 항상 안전 (사용자 관리 영역 밖)
+        if (ticker or '').startswith('CASH'):
+            return ('안전', 0.0)
+
         pc = (pc or '').strip()
 
         # 1) 순수 숫자 (예: "15" → 15% 위험)
@@ -2425,23 +2430,12 @@ if view == "HS 포폴":
         HEDGE = {'헷지', '인버스', 'VIX', '레버리지'}
         RISK = {'위험', '주식', '공격'}
         if pc in SAFE: return ('안전', 0.0)
-        # 한국 퇴직연금 규정: 채권혼합 ETF (주식 ≤40%) 는 100% 안전자산으로 카운트
-        if pc in BOND_MIX: return ('채권혼합', 0.0)  # 기본값 — 주식>40% 인 경우만 숫자 override
+        # 한국 퇴직연금 규정: 채권혼합 ETF (주식 ≤40%) 는 100% 안전자산
+        if pc in BOND_MIX: return ('채권혼합', 0.0)
         if pc in HEDGE: return ('헷지', 1.0)
         if pc in RISK: return ('위험', 1.0)
 
-        # 4) 이름/테마 fallback
-        nm = name or ''
-        if '채권혼합' in nm:
-            return ('채권혼합', 0.0)
-        if (('채권' in nm or '국채' in nm or 'MMF' in nm) and '채권혼합' not in nm):
-            return ('안전', 0.0)
-        if (theme or '').strip() == '안전 자산':
-            return ('안전', 0.0)
-        if (ticker or '').startswith('CASH'):
-            return ('안전', 0.0)
-        if (position or '').strip() == '방위군':
-            return ('헷지', 1.0)
+        # 4) 빈칸 또는 미인식 → 보수적으로 위험으로 간주
         return ('위험', 1.0)
 
     pension_rows = []
