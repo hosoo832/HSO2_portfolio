@@ -2378,11 +2378,12 @@ if view == "HS 포폴":
     st.divider()
     st.subheader("🛡️ 퇴직연금 가드")
     st.caption(
-        "**규제**: 위험자산 ≤ 70% / 안전자산 ≥ 30% (계좌 단위).  \n"
-        "**분류 (한국 퇴직연금 규정)**:  \n"
-        "• **위험** = 일반 주식 + 헷지 (인버스/VIX) + 채권혼합 ETF 의 30%  \n"
-        "• **안전** = 순수 채권/국채 ETF + 현금 + MMF + 채권혼합 ETF 의 70%  \n"
-        "💡 분류 우선순위: `master_data` 시트의 `pension_class` 컬럼 (명시값) > 이름/테마 기반 자동 추정"
+        "**규제**: 위험자산 ≤ 70% / 안전자산 ≥ 30% (분모 = 계좌 AUM 전체, 현금 포함).  \n"
+        "**위험비중 (한국 퇴직연금 규정)**:  \n"
+        "• 일반 주식 / 헷지 (인버스·VIX): **100% 위험**  \n"
+        "• 채권혼합 ETF (주식 ≤ 40%): **0% 위험** (= 100% 안전)  \n"
+        "• 순수 채권/국채/MMF/현금: **0% 위험**  \n"
+        "💡 예외 (주식 비중 >40%인 채권혼합) 만 master_data 의 `pension_class` 에 숫자 override (예: `채권혼합50`, `45`)"
     )
 
     # [v75.x] master_data 의 pension_class 컬럼 룩업 (명시적 분류 우선)
@@ -2394,34 +2395,54 @@ if view == "HS 포폴":
         ))
 
     def _classify_pension(pc, name, theme, position, ticker):
-        """우선순위: pension_class 명시 > 이름/테마 기반 fallback.
-        반환값: '안전' / '채권혼합' / '헷지' / '위험'
-        다양한 표기 수용 (예: '채권', '국채', '현금' → '안전')
+        """반환값: (분류명, 위험비중 0.0~1.0) 튜플.
+        우선순위: pc 숫자 > pc 라벨+숫자 (채권혼합20) > pc 라벨 > 이름 fallback.
         """
         pc = (pc or '').strip()
-        # 명시값 다양한 표기 매핑
+
+        # 1) 순수 숫자 (예: "15" → 15% 위험)
+        try:
+            val = float(pc)
+            if 0 <= val <= 100:
+                return ('사용자지정', val / 100)
+        except ValueError:
+            pass
+
+        # 2) 라벨+숫자 (예: "채권혼합20" → 채권혼합 20%)
+        for prefix in ('채권혼합', '혼합'):
+            if pc.startswith(prefix) and len(pc) > len(prefix):
+                rest = pc[len(prefix):].strip()
+                try:
+                    val = float(rest)
+                    if 0 <= val <= 100:
+                        return ('채권혼합', val / 100)
+                except ValueError:
+                    pass
+
+        # 3) 라벨 매핑
         SAFE = {'안전', '안전자산', '채권', '국채', 'MMF', '현금'}
         BOND_MIX = {'채권혼합', '혼합'}
         HEDGE = {'헷지', '인버스', 'VIX', '레버리지'}
         RISK = {'위험', '주식', '공격'}
-        if pc in SAFE: return '안전'
-        if pc in BOND_MIX: return '채권혼합'
-        if pc in HEDGE: return '헷지'
-        if pc in RISK: return '위험'
+        if pc in SAFE: return ('안전', 0.0)
+        # 한국 퇴직연금 규정: 채권혼합 ETF (주식 ≤40%) 는 100% 안전자산으로 카운트
+        if pc in BOND_MIX: return ('채권혼합', 0.0)  # 기본값 — 주식>40% 인 경우만 숫자 override
+        if pc in HEDGE: return ('헷지', 1.0)
+        if pc in RISK: return ('위험', 1.0)
 
-        # Fallback (master_data 의 pension_class 가 비어있을 때만)
+        # 4) 이름/테마 fallback
         nm = name or ''
         if '채권혼합' in nm:
-            return '채권혼합'
+            return ('채권혼합', 0.0)
         if (('채권' in nm or '국채' in nm or 'MMF' in nm) and '채권혼합' not in nm):
-            return '안전'
+            return ('안전', 0.0)
         if (theme or '').strip() == '안전 자산':
-            return '안전'
+            return ('안전', 0.0)
         if (ticker or '').startswith('CASH'):
-            return '안전'
+            return ('안전', 0.0)
         if (position or '').strip() == '방위군':
-            return '헷지'
-        return '위험'
+            return ('헷지', 1.0)
+        return ('위험', 1.0)
 
     pension_rows = []
     for acc in PENSION_ACCS:
@@ -2434,35 +2455,23 @@ if view == "HS 포폴":
         names = sub.get('name', pd.Series([''] * len(sub))).astype(str)
         tickers = sub.get('ticker', pd.Series([''] * len(sub))).astype(str).str.strip()
 
-        # 각 행을 4가지 카테고리 중 하나로 분류
-        classifications = pd.Series([
+        # 각 행을 (분류명, 위험비중) 튜플로 분류
+        results = [
             _classify_pension(
                 pension_class_lookup.get(tickers.iloc[i], ''),
                 names.iloc[i], themes.iloc[i], positions.iloc[i], tickers.iloc[i]
             )
             for i in range(len(sub))
-        ], index=sub.index)
+        ]
+        classifications = pd.Series([r[0] for r in results], index=sub.index)
+        risk_ratios = pd.Series([r[1] for r in results], index=sub.index)
 
-        is_pure_safe = (classifications == '안전')
-        is_bond_mix = (classifications == '채권혼합')
-        is_hedge = (classifications == '헷지')
-        is_pure_risk = (classifications == '위험')
-
-        bond_mix_mv = sub.loc[is_bond_mix, 'market_value_krw'].sum()
-
-        # 위험자산 = 순수 위험 + 헷지 (인버스/VIX) + 채권혼합의 30%
-        risk_mv = (
-            sub.loc[is_pure_risk, 'market_value_krw'].sum()
-            + sub.loc[is_hedge, 'market_value_krw'].sum()
-            + bond_mix_mv * 0.30
-        )
-        # 안전자산 = 순수 안전 + 채권혼합의 70%
-        safe_mv = (
-            sub.loc[is_pure_safe, 'market_value_krw'].sum()
-            + bond_mix_mv * 0.70
-        )
-        hedge_mv = sub.loc[is_hedge, 'market_value_krw'].sum()
+        # 위험자산 = 각 종목의 평가액 × 위험비중 합
+        # 안전자산 = 각 종목의 평가액 × (1 - 위험비중) 합
+        risk_mv = float((sub['market_value_krw'] * risk_ratios).sum())
+        safe_mv = float((sub['market_value_krw'] * (1 - risk_ratios)).sum())
         total_mv = sub['market_value_krw'].sum()
+        hedge_mv = sub.loc[classifications == '헷지', 'market_value_krw'].sum()
 
         if total_mv == 0:
             continue
@@ -2488,16 +2497,17 @@ if view == "HS 포폴":
             '상태': status,
         })
 
-        # === 🐛 디버그: 종목별 분류 표시 ===
+        # === 🐛 디버그: 종목별 분류 + 위험비중 표시 ===
         with st.expander(f"🐛 [{acc}] 종목별 분류 디버그 (펼쳐서 확인)"):
             debug_df = pd.DataFrame({
                 'ticker': tickers.values,
                 'name': names.values,
                 'market_value_krw': sub['market_value_krw'].values,
                 'theme': themes.values,
-                'postion': positions.values,
                 'pension_class (시트값)': [pension_class_lookup.get(t, '') for t in tickers.values],
                 '최종 분류': classifications.values,
+                '위험비중': risk_ratios.values,
+                '위험기여 (₩)': (sub['market_value_krw'] * risk_ratios).values,
             })
             debug_df = debug_df.sort_values('market_value_krw', ascending=False).reset_index(drop=True)
 
@@ -2506,6 +2516,7 @@ if view == "HS 포폴":
                 colors = {
                     '안전': 'background-color: #e8f5e9',
                     '채권혼합': 'background-color: #fff8e1',
+                    '사용자지정': 'background-color: #e3f2fd',
                     '헷지': 'background-color: #ffebee',
                     '위험': 'background-color: #f5f5f5',
                 }
@@ -2513,13 +2524,19 @@ if view == "HS 포폴":
 
             styled_debug = (
                 debug_df.style
-                .format({'market_value_krw': '₩{:,.0f}'})
+                .format({
+                    'market_value_krw': '₩{:,.0f}',
+                    '위험비중': '{:.0%}',
+                    '위험기여 (₩)': '₩{:,.0f}',
+                })
                 .apply(_row_color, axis=1)
             )
             st.dataframe(styled_debug, use_container_width=True, hide_index=True)
             st.caption(
-                "🟢 안전 / 🟡 채권혼합 (30/70 split) / 🔴 헷지 (= 위험) / ⚪ 위험.  "
-                "**잘못된 분류 발견 시**: master_data 시트의 `pension_class` 컬럼에 정정값 입력 후 새로고침."
+                "**분류**: 🟢 안전 / 🟡 채권혼합 / 🔵 사용자지정 / 🔴 헷지 / ⚪ 위험.  \n"
+                "**위험비중 조정**: master_data 의 `pension_class` 컬럼에  \n"
+                "• `안전` → 0% / `채권혼합` → 30% (기본) / `위험` 또는 `헷지` → 100%  \n"
+                "• 또는 **숫자 직접 입력** (예: `15` → 15%, `채권혼합20` → 채권혼합 20%)"
             )
 
     if pension_rows:
