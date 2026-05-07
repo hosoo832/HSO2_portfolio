@@ -273,6 +273,47 @@ with st.sidebar:
         st.cache_data.clear()
         st.rerun()
 
+    # ---- main.py 실행 버튼 (GitHub Actions 트리거) ----
+    def _trigger_main_workflow():
+        try:
+            token = st.secrets.get("GITHUB_PAT")
+        except Exception:
+            token = None
+        if not token:
+            return False, "GITHUB_PAT 미등록 (Streamlit Cloud → App settings → Secrets 에 추가)"
+
+        url = "https://api.github.com/repos/hosoo832/HSO2_portfolio/actions/workflows/run-main.yml/dispatches"
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        }
+        try:
+            r = requests.post(url, headers=headers, json={"ref": "main"}, timeout=10)
+            if r.status_code == 204:
+                return True, "실행 시작됨 — 1~2분 후 위 새로고침 클릭"
+            return False, f"GitHub API 에러 {r.status_code}: {r.text[:150]}"
+        except Exception as e:
+            return False, f"네트워크 에러: {e}"
+
+    if st.button("▶️ main.py 실행", use_container_width=True,
+                 help="GitHub Actions 트리거. 1~2분 후 데이터 새로고침 누르세요."):
+        with st.spinner("GitHub Actions 트리거 중..."):
+            ok, msg = _trigger_main_workflow()
+        if ok:
+            st.success(f"🚀 {msg}")
+            st.session_state['_main_triggered_at'] = now_kst()
+        else:
+            st.error(f"❌ {msg}")
+
+    # 최근 트리거 시각 표시 (3분 안에)
+    if '_main_triggered_at' in st.session_state:
+        elapsed = (now_kst() - st.session_state['_main_triggered_at']).total_seconds()
+        if elapsed < 180:
+            st.caption(f"🚀 main.py 실행 중 (트리거 후 {int(elapsed)}초)")
+        elif elapsed < 600:
+            st.caption("✅ main.py 완료 예상 — 새로고침 권장")
+
     st.caption(f"마지막 로드: {now_kst().strftime('%H:%M:%S KST')}")
     st.caption("Phase 1 (Hero + 비중 + 단기)")
 
