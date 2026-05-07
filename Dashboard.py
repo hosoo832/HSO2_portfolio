@@ -2488,6 +2488,40 @@ if view == "HS 포폴":
             '상태': status,
         })
 
+        # === 🐛 디버그: 종목별 분류 표시 ===
+        with st.expander(f"🐛 [{acc}] 종목별 분류 디버그 (펼쳐서 확인)"):
+            debug_df = pd.DataFrame({
+                'ticker': tickers.values,
+                'name': names.values,
+                'market_value_krw': sub['market_value_krw'].values,
+                'theme': themes.values,
+                'postion': positions.values,
+                'pension_class (시트값)': [pension_class_lookup.get(t, '') for t in tickers.values],
+                '최종 분류': classifications.values,
+            })
+            debug_df = debug_df.sort_values('market_value_krw', ascending=False).reset_index(drop=True)
+
+            def _row_color(row):
+                cls = row['최종 분류']
+                colors = {
+                    '안전': 'background-color: #e8f5e9',
+                    '채권혼합': 'background-color: #fff8e1',
+                    '헷지': 'background-color: #ffebee',
+                    '위험': 'background-color: #f5f5f5',
+                }
+                return [colors.get(cls, '')] * len(row)
+
+            styled_debug = (
+                debug_df.style
+                .format({'market_value_krw': '₩{:,.0f}'})
+                .apply(_row_color, axis=1)
+            )
+            st.dataframe(styled_debug, use_container_width=True, hide_index=True)
+            st.caption(
+                "🟢 안전 / 🟡 채권혼합 (30/70 split) / 🔴 헷지 (= 위험) / ⚪ 위험.  "
+                "**잘못된 분류 발견 시**: master_data 시트의 `pension_class` 컬럼에 정정값 입력 후 새로고침."
+            )
+
     if pension_rows:
         df_pension = pd.DataFrame(pension_rows)
 
