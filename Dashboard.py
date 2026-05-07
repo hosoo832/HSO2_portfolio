@@ -2380,45 +2380,68 @@ if view == "HS 포폴":
     st.caption(
         "**규제**: 위험자산 ≤ 70% / 안전자산 ≥ 30% (계좌 단위).  \n"
         "**분류 (한국 퇴직연금 규정)**:  \n"
-        "• **위험** = 일반 주식 + 방위군 (인버스/VIX) + 채권혼합 ETF 의 30%  \n"
-        "• **안전** = 순수 채권/국채 ETF + 현금 + MMF + 채권혼합 ETF 의 70%"
+        "• **위험** = 일반 주식 + 헷지 (인버스/VIX) + 채권혼합 ETF 의 30%  \n"
+        "• **안전** = 순수 채권/국채 ETF + 현금 + MMF + 채권혼합 ETF 의 70%  \n"
+        "💡 분류 우선순위: `master_data` 시트의 `pension_class` 컬럼 (명시값) > 이름/테마 기반 자동 추정"
     )
+
+    # [v75.x] master_data 의 pension_class 컬럼 룩업 (명시적 분류 우선)
+    pension_class_lookup = {}
+    if not df_master.empty and 'ticker' in df_master.columns and 'pension_class' in df_master.columns:
+        pension_class_lookup = dict(zip(
+            df_master['ticker'].astype(str).str.strip(),
+            df_master['pension_class'].astype(str).str.strip()
+        ))
+
+    def _classify_pension(pc, name, theme, position, ticker):
+        """우선순위: pension_class 명시 > 이름/테마 기반 fallback.
+        반환값: '안전' / '채권혼합' / '헷지' / '위험'
+        """
+        pc = (pc or '').strip()
+        if pc in ('안전', '채권혼합', '헷지', '위험'):
+            return pc
+        # Fallback (master_data 의 pension_class 가 비어있을 때만)
+        nm = name or ''
+        if '채권혼합' in nm:
+            return '채권혼합'
+        if (('채권' in nm or '국채' in nm or 'MMF' in nm) and '채권혼합' not in nm):
+            return '안전'
+        if (theme or '').strip() == '안전 자산':
+            return '안전'
+        if (ticker or '').startswith('CASH'):
+            return '안전'
+        if (position or '').strip() == '방위군':
+            return '헷지'
+        return '위험'
 
     pension_rows = []
     for acc in PENSION_ACCS:
-        sub = df_view[df_view['account_clean'] == acc]
+        sub = df_view[df_view['account_clean'] == acc].copy()
         if sub.empty:
             continue
 
         themes = sub.get('theme', pd.Series([''] * len(sub))).astype(str).str.strip()
         positions = sub.get('postion', pd.Series([''] * len(sub))).astype(str).str.strip()
         names = sub.get('name', pd.Series([''] * len(sub))).astype(str)
-        tickers = sub.get('ticker', pd.Series([''] * len(sub))).astype(str)
+        tickers = sub.get('ticker', pd.Series([''] * len(sub))).astype(str).str.strip()
 
-        # [v75.x 수정] theme_remap 후 '채권혼합' 라벨이 사라져서 이름 기반 판별로 전환
-        # 한국 퇴직연금 규제 반영: 채권혼합 ETF 는 30% 위험 + 70% 안전 으로 split
+        # 각 행을 4가지 카테고리 중 하나로 분류
+        classifications = pd.Series([
+            _classify_pension(
+                pension_class_lookup.get(tickers.iloc[i], ''),
+                names.iloc[i], themes.iloc[i], positions.iloc[i], tickers.iloc[i]
+            )
+            for i in range(len(sub))
+        ], index=sub.index)
 
-        # 채권혼합 ETF (이름에 '채권혼합' 포함) — 30/70 split 대상
-        is_bond_mix = names.str.contains('채권혼합', regex=False, na=False)
-
-        # 100% 안전자산: 순수 채권 ETF (채권혼합 제외) + 국채 + MMF + 현금 + 명시적 안전
-        is_pure_safe = (
-            (names.str.contains('채권', regex=False, na=False) & ~is_bond_mix) |
-            names.str.contains('국채', regex=False, na=False) |
-            names.str.contains('MMF', regex=False, na=False) |
-            (themes == '안전 자산') |
-            tickers.str.startswith('CASH')
-        )
-
-        # 방위군 (인버스/VIX 등) — 한국 퇴직연금 규제상 100% 위험자산으로 카운트
-        is_hedge = (positions == '방위군')
-
-        # 100% 위험자산: 위 카테고리에 안 들어간 일반 주식
-        is_pure_risk = ~is_pure_safe & ~is_bond_mix & ~is_hedge
+        is_pure_safe = (classifications == '안전')
+        is_bond_mix = (classifications == '채권혼합')
+        is_hedge = (classifications == '헷지')
+        is_pure_risk = (classifications == '위험')
 
         bond_mix_mv = sub.loc[is_bond_mix, 'market_value_krw'].sum()
 
-        # 위험자산 = 순수 위험 + 방위군 + 채권혼합의 30%
+        # 위험자산 = 순수 위험 + 헷지 (인버스/VIX) + 채권혼합의 30%
         risk_mv = (
             sub.loc[is_pure_risk, 'market_value_krw'].sum()
             + sub.loc[is_hedge, 'market_value_krw'].sum()
