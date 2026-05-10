@@ -833,6 +833,12 @@ if view == "📓 작전 일지":
 
         st.markdown("### 💸 D. 매매 내역과 이유")
 
+        def _account_to_group(acc):
+            acc = clean_account(acc)
+            if acc in MENTOR_ACCS: return '멘토'
+            if acc in HS_ACCS: return 'HS'
+            return ''
+
         # raw 시트에서 해당 날짜 매매 자동 import 헬퍼
         def _fetch_trades_for_date(date_str):
             """raw_domestic + raw_international 에서 매매 거래만 추출."""
@@ -851,6 +857,8 @@ if view == "📓 작전 일지":
                         if not ('보통매매' in search or '재투자' in search):
                             continue
                         action = '매도' if '매도' in search else '매수'
+                        acc = clean_account(r.get('계좌번호', ''))
+                        grp = _account_to_group(acc)
                         name = str(r.get('종목명', '')).strip()
                         qty = str(r.get('거래수량', '')).strip().replace(',', '')
                         amt = str(r.get('정산금액', '')).strip().replace(',', '')
@@ -861,8 +869,8 @@ if view == "📓 작전 일지":
                         except Exception:
                             price_str = ''
                         rows.append({
-                            '매매': action, '종목명': name,
-                            '가격': price_str, '수익률': '', '이유': '',
+                            '계좌': acc, '그룹': grp, '매매': action,
+                            '종목명': name, '가격': price_str, '이유': '',
                         })
             except Exception:
                 pass
@@ -881,6 +889,8 @@ if view == "📓 작전 일지":
                         if memo not in ('매수', '매도'):
                             continue
                         action = memo
+                        acc = clean_account(r.get('계좌번호', ''))
+                        grp = _account_to_group(acc)
                         name = str(r.get('종목명', '')).strip()
                         qty = str(r.get('거래수량', '')).strip().replace(',', '')
                         amt = str(r.get('정산금액(외)', '')).strip().replace(',', '')
@@ -892,8 +902,8 @@ if view == "📓 작전 일지":
                         except Exception:
                             price_str = ''
                         rows.append({
-                            '매매': action, '종목명': name,
-                            '가격': price_str, '수익률': '', '이유': '',
+                            '계좌': acc, '그룹': grp, '매매': action,
+                            '종목명': name, '가격': price_str, '이유': '',
                         })
             except Exception:
                 pass
@@ -905,11 +915,10 @@ if view == "📓 작전 일지":
         should_reload_raw = st.session_state.pop('_journal_reload_raw', False)
 
         empty_default = pd.DataFrame(
-            [{'매매': '', '종목명': '', '가격': '', '수익률': '', '이유': ''}] * 3
+            [{'계좌': '', '그룹': '', '매매': '', '종목명': '', '가격': '', '이유': ''}] * 3
         )
 
         if should_reload_raw:
-            # 사용자가 위 버튼 클릭한 경우만 raw fetch (느림)
             with st.spinner("raw 시트 로딩 중... (3000+ 행 처리 ~5초)"):
                 auto_trades = _fetch_trades_for_date(sel_date_str)
             if auto_trades:
@@ -919,19 +928,27 @@ if view == "📓 작전 일지":
                 trades_init = empty_default
                 st.info(f"raw 시트에 {sel_date_str} 매매 없음")
         elif existing_trades:
-            # 저장된 내용 (사용자 편집 보존)
+            # 저장된 내용 — 신/구 포맷 모두 지원
             rows = []
             for line in existing_trades.split('\n'):
                 parts = line.split('|')
-                while len(parts) < 5:
-                    parts.append('')
-                rows.append({
-                    '매매': parts[0], '종목명': parts[1], '가격': parts[2],
-                    '수익률': parts[3], '이유': parts[4],
-                })
+                if len(parts) >= 6:
+                    # 신 포맷: 계좌|그룹|매매|종목명|가격|이유
+                    rows.append({
+                        '계좌': parts[0], '그룹': parts[1], '매매': parts[2],
+                        '종목명': parts[3], '가격': parts[4], '이유': parts[5],
+                    })
+                else:
+                    # 구 포맷: 매매|종목명|가격|수익률|이유 (수익률은 버림)
+                    while len(parts) < 5:
+                        parts.append('')
+                    rows.append({
+                        '계좌': '', '그룹': '',
+                        '매매': parts[0], '종목명': parts[1],
+                        '가격': parts[2], '이유': parts[4],
+                    })
             trades_init = pd.DataFrame(rows)
         else:
-            # 첫 방문 — 빈 표만 (자동 raw fetch X, 페이지 로딩 빠르게)
             trades_init = empty_default
             st.caption(
                 "💡 이 날짜의 raw 매매내역 자동 채우려면 위의 "
@@ -943,11 +960,13 @@ if view == "📓 작전 일지":
             num_rows="dynamic",
             use_container_width=True,
             column_config={
+                '계좌': st.column_config.TextColumn(width="small"),
+                '그룹': st.column_config.SelectboxColumn(
+                    options=['', '멘토', 'HS'], width="small"),
                 '매매': st.column_config.SelectboxColumn(
                     options=['', '매수', '매도', '관망'], width="small"),
                 '종목명': st.column_config.TextColumn(width="medium"),
                 '가격': st.column_config.TextColumn(help="₩ 가격 또는 자유 텍스트", width="small"),
-                '수익률': st.column_config.TextColumn(help="매도 시 실현 수익률 (선택)", width="small"),
                 '이유': st.column_config.TextColumn(width="large"),
             },
             key=f"trades_editor_{sel_date_str}",
@@ -976,17 +995,18 @@ if view == "📓 작전 일지":
         submitted = st.form_submit_button("💾 저장", type="primary", use_container_width=True)
 
         if submitted:
-            # 매매 내역 → multi-line text 직렬화
+            # 매매 내역 → multi-line text 직렬화 (신 포맷: 계좌|그룹|매매|종목명|가격|이유)
             trades_lines = []
             for _, r in trades_edited.iterrows():
+                acc = str(r.get('계좌', '')).strip()
+                grp = str(r.get('그룹', '')).strip()
                 action = str(r.get('매매', '')).strip()
                 name = str(r.get('종목명', '')).strip()
                 if not action and not name:
                     continue  # 빈 행 스킵
                 price = str(r.get('가격', '')).strip()
-                ret = str(r.get('수익률', '')).strip()
                 reason = str(r.get('이유', '')).strip()
-                trades_lines.append(f"{action}|{name}|{price}|{ret}|{reason}")
+                trades_lines.append(f"{acc}|{grp}|{action}|{name}|{price}|{reason}")
             trades_text = '\n'.join(trades_lines)
 
             try:
