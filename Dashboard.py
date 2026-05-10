@@ -839,6 +839,14 @@ if view == "📓 작전 일지":
             if acc in HS_ACCS: return 'HS'
             return ''
 
+        # 그룹 AUM 사전 계산 (정산금액 / 그룹AUM × 100 = 비중%)
+        _group_aum = {
+            '멘토': float(df_dashboard[df_dashboard['account_clean'].isin(MENTOR_ACCS)]
+                          ['market_value_krw'].apply(pd.to_numeric, errors='coerce').sum()),
+            'HS':   float(df_dashboard[df_dashboard['account_clean'].isin(HS_ACCS)]
+                          ['market_value_krw'].apply(pd.to_numeric, errors='coerce').sum()),
+        }
+
         # raw 시트에서 해당 날짜 매매 자동 import 헬퍼
         def _fetch_trades_for_date(date_str):
             """raw_domestic + raw_international 에서 매매 거래만 추출."""
@@ -866,11 +874,16 @@ if view == "📓 작전 일지":
                             qf, af = float(qty), float(amt)
                             price = af / qf if qf > 0 else 0
                             price_str = f"₩{int(price):,}" if price > 0 else amt
+                            settle_str = f"₩{int(af):,}" if af > 0 else amt
+                            # 그룹 비중 (KRW 거래 → 그대로 비교)
+                            grp_aum = _group_aum.get(grp, 0)
+                            ratio_str = f"{(af / grp_aum * 100):.2f}%" if grp_aum > 0 and af > 0 else ''
                         except Exception:
-                            price_str = ''
+                            price_str = ''; settle_str = ''; ratio_str = ''
                         rows.append({
-                            '계좌': acc, '그룹': grp, '매매': action,
-                            '종목명': name, '가격': price_str, '이유': '',
+                            '계좌': acc, '그룹': grp, '매매': action, '종목명': name,
+                            '가격': price_str, '정산금액': settle_str,
+                            '그룹비중': ratio_str, '이유': '',
                         })
             except Exception:
                 pass
@@ -899,11 +912,14 @@ if view == "📓 작전 일지":
                             qf, af = float(qty), float(amt)
                             price = af / qf if qf > 0 else 0
                             price_str = f"{price:.2f} {ccy}" if price > 0 else amt
+                            settle_str = f"{af:,.2f} {ccy}" if af > 0 else amt
                         except Exception:
-                            price_str = ''
+                            price_str = ''; settle_str = ''
+                        # 외화 거래는 그룹비중 자동 계산 안 함 (FX 환산 별도 필요) — 빈칸
                         rows.append({
-                            '계좌': acc, '그룹': grp, '매매': action,
-                            '종목명': name, '가격': price_str, '이유': '',
+                            '계좌': acc, '그룹': grp, '매매': action, '종목명': name,
+                            '가격': price_str, '정산금액': settle_str,
+                            '그룹비중': '', '이유': '',
                         })
             except Exception:
                 pass
@@ -915,7 +931,8 @@ if view == "📓 작전 일지":
         should_reload_raw = st.session_state.pop('_journal_reload_raw', False)
 
         empty_default = pd.DataFrame(
-            [{'계좌': '', '그룹': '', '매매': '', '종목명': '', '가격': '', '이유': ''}] * 3
+            [{'계좌': '', '그룹': '', '매매': '', '종목명': '',
+              '가격': '', '정산금액': '', '그룹비중': '', '이유': ''}] * 3
         )
 
         if should_reload_raw:
@@ -928,24 +945,32 @@ if view == "📓 작전 일지":
                 trades_init = empty_default
                 st.info(f"raw 시트에 {sel_date_str} 매매 없음")
         elif existing_trades:
-            # 저장된 내용 — 신/구 포맷 모두 지원
+            # 저장된 내용 — 신/중간/구 포맷 모두 지원
             rows = []
             for line in existing_trades.split('\n'):
                 parts = line.split('|')
-                if len(parts) >= 6:
-                    # 신 포맷: 계좌|그룹|매매|종목명|가격|이유
+                if len(parts) >= 8:
+                    # 최신 포맷: 계좌|그룹|매매|종목명|가격|정산금액|그룹비중|이유
                     rows.append({
                         '계좌': parts[0], '그룹': parts[1], '매매': parts[2],
-                        '종목명': parts[3], '가격': parts[4], '이유': parts[5],
+                        '종목명': parts[3], '가격': parts[4],
+                        '정산금액': parts[5], '그룹비중': parts[6], '이유': parts[7],
+                    })
+                elif len(parts) == 6:
+                    # 중간 포맷: 계좌|그룹|매매|종목명|가격|이유 (정산금액/그룹비중 빈칸)
+                    rows.append({
+                        '계좌': parts[0], '그룹': parts[1], '매매': parts[2],
+                        '종목명': parts[3], '가격': parts[4],
+                        '정산금액': '', '그룹비중': '', '이유': parts[5],
                     })
                 else:
-                    # 구 포맷: 매매|종목명|가격|수익률|이유 (수익률은 버림)
+                    # 구 포맷: 매매|종목명|가격|수익률|이유 (수익률 버림)
                     while len(parts) < 5:
                         parts.append('')
                     rows.append({
                         '계좌': '', '그룹': '',
-                        '매매': parts[0], '종목명': parts[1],
-                        '가격': parts[2], '이유': parts[4],
+                        '매매': parts[0], '종목명': parts[1], '가격': parts[2],
+                        '정산금액': '', '그룹비중': '', '이유': parts[4],
                     })
             trades_init = pd.DataFrame(rows)
         else:
@@ -966,7 +991,10 @@ if view == "📓 작전 일지":
                 '매매': st.column_config.SelectboxColumn(
                     options=['', '매수', '매도', '관망'], width="small"),
                 '종목명': st.column_config.TextColumn(width="medium"),
-                '가격': st.column_config.TextColumn(help="₩ 가격 또는 자유 텍스트", width="small"),
+                '가격': st.column_config.TextColumn(help="단가 (1주당)", width="small"),
+                '정산금액': st.column_config.TextColumn(help="총 거래금액", width="small"),
+                '그룹비중': st.column_config.TextColumn(
+                    help="정산금액 / 그룹 AUM × 100 (국내 자동, 외화 빈칸)", width="small"),
                 '이유': st.column_config.TextColumn(width="large"),
             },
             key=f"trades_editor_{sel_date_str}",
@@ -995,7 +1023,7 @@ if view == "📓 작전 일지":
         submitted = st.form_submit_button("💾 저장", type="primary", use_container_width=True)
 
         if submitted:
-            # 매매 내역 → multi-line text 직렬화 (신 포맷: 계좌|그룹|매매|종목명|가격|이유)
+            # 매매 내역 → 8필드 직렬화: 계좌|그룹|매매|종목명|가격|정산금액|그룹비중|이유
             trades_lines = []
             for _, r in trades_edited.iterrows():
                 acc = str(r.get('계좌', '')).strip()
@@ -1003,10 +1031,12 @@ if view == "📓 작전 일지":
                 action = str(r.get('매매', '')).strip()
                 name = str(r.get('종목명', '')).strip()
                 if not action and not name:
-                    continue  # 빈 행 스킵
+                    continue
                 price = str(r.get('가격', '')).strip()
+                settle = str(r.get('정산금액', '')).strip()
+                ratio = str(r.get('그룹비중', '')).strip()
                 reason = str(r.get('이유', '')).strip()
-                trades_lines.append(f"{acc}|{grp}|{action}|{name}|{price}|{reason}")
+                trades_lines.append(f"{acc}|{grp}|{action}|{name}|{price}|{settle}|{ratio}|{reason}")
             trades_text = '\n'.join(trades_lines)
 
             try:
