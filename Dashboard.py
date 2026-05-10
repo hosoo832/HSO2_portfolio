@@ -278,7 +278,7 @@ with st.sidebar:
 
     view = st.radio(
         "뷰 선택",
-        ["전체", "멘토 포폴", "HS 포폴", "💼 장중 실시간", "📰 시장 동향", "📓 작전 일지"],
+        ["전체", "멘토 포폴", "HS 포폴", "💼 장중 실시간", "📓 작전 일지"],
         index=0,
     )
 
@@ -382,259 +382,6 @@ for col in ['market_value_krw', 'unrealized_pl_krw', 'realized_pl_krw',
 # 그룹 매핑
 df_dashboard['account_clean'] = df_dashboard['account'].apply(clean_account)
 df_dashboard['group_name'] = df_dashboard['account_clean'].map(ACCOUNT_GROUPS).fillna('기타')
-
-# =========================================================
-# [시장 동향 뷰] — market_data 시트 기반
-# 매일 아침 시장 체크용: 카드 (어제 마감) + 선 차트 (추세)
-# =========================================================
-if view == "📰 시장 동향":
-    st.title("📰 시장 동향")
-    st.caption(
-        "매일 아침 시장 체크용 — 한국/미국/중국/독일 시장, 환율, 금리, 원자재, 크립토, 변동성, 자금흐름"
-    )
-
-    # market_data 시트 로드
-    try:
-        df_market = load_sheet("market_data")
-    except Exception as e:
-        st.error(f"market_data 시트 로드 실패: {e}")
-        st.stop()
-
-    if df_market.empty:
-        st.warning("market_data 시트가 비어있습니다.")
-        st.stop()
-
-    # date 컬럼 파싱 — 한국 locale ("2020. 01. 01 (수)") 도 처리
-    date_col_name = df_market.columns[0]  # 첫 컬럼이 date
-    _date_raw = df_market[date_col_name].astype(str).str.strip()
-    # 1) 괄호 포함 요일 제거: "2020. 01. 01 (수)" → "2020. 01. 01"
-    # 2) 점/공백/슬래시 → 하이픈
-    # 3) 양 끝 하이픈 정리
-    _date_norm = (_date_raw
-                  .str.replace(r'\s*\([^)]*\)\s*', '', regex=True)
-                  .str.replace(r'[\.\s/]+', '-', regex=True)
-                  .str.strip('-'))
-    df_market['_date'] = pd.to_datetime(_date_norm, errors='coerce')
-    df_market = df_market.dropna(subset=['_date']).sort_values('_date').reset_index(drop=True)
-
-    if df_market.empty:
-        st.warning("유효한 날짜 데이터가 없습니다.")
-        st.stop()
-
-    # 숫자 컬럼 변환
-    for col in df_market.columns:
-        if col not in (date_col_name, '_date'):
-            df_market[col] = pd.to_numeric(
-                df_market[col].astype(str).str.replace(r'[^\d.\-]', '', regex=True),
-                errors='coerce'
-            )
-
-    latest_market = df_market.iloc[-1]
-    latest_market_date = latest_market['_date']
-
-    st.caption(f"📅 기준일: **{latest_market_date.strftime('%Y-%m-%d')}** "
-               f"(market_data 시트 최신 행)")
-
-    # ── 시장 그룹 매핑 ──
-    MARKET_GROUPS = [
-        ("🇰🇷 한국", [
-            ('KOSPI', 'KOSPI_price', 'KOSPI_chg_pct'),
-            ('KOSDAQ', 'KOSDAQ_price', 'KOSDAQ_chg_pct'),
-        ]),
-        ("🇺🇸 미국", [
-            ('S&P 500', 'SP500_price', 'SP500_chg_pct'),
-            ('NASDAQ', 'NASDAQ_price', 'NASDAQ_chg_pct'),
-        ]),
-        ("🌏 중국 / 일본 / 독일", [
-            ('Shanghai', 'SHANGHAI_price', 'SHANGHAI_chg_pct'),
-            ('Nikkei', 'NIKKEI_price', 'NIKKEI_chg_pct'),
-            ('DAX', 'DAX_price', 'DAX_chg_pct'),
-        ]),
-        ("💱 환율 / 변동성", [
-            ('USD/KRW', 'USDKRW_price', 'USDKRW_chg_pct'),
-            ('USD Index', 'USD_IDX_price', 'USD_IDX_chg_pct'),
-            ('VIX', 'VIX_price', 'VIX_chg_pct'),
-        ]),
-        ("📈 채권 금리", [
-            ('US 10Y', 'US_10Y_Bond_rate', 'US_10Y_Bond_chg_bps'),
-            ('US 30Y', 'US_30Y_Bond_rate', 'US_30Y_Bond_chg_bps'),
-            ('KR 10Y', 'KR_10Y_Bond_rate', 'KR_10Y_Bond_chg_bps'),
-        ]),
-        ("🛢️ 원자재 / ₿ 크립토", [
-            ('WTI', 'WTI_price', 'WTI_chg_pct'),
-            ('GOLD', 'GOLD_price', 'GOLD_chg_pct'),
-            ('BTC', 'BTC_price', 'BTC_chg_pct'),
-        ]),
-        ("💰 한국 자금 흐름", [
-            ('고객예탁금 (억원)', 'Customer_Deposit_value', 'Customer_Deposit_chg_pct'),
-            ('신용잔고 (억원)', 'Credit_Balance_value', 'Credit_Balance_chg_pct'),
-        ]),
-    ]
-
-    def _fmt_market_value(val, col_name):
-        if val is None or pd.isna(val):
-            return "-"
-        if 'rate' in col_name:
-            return f"{val:.3f}"
-        if abs(val) >= 10000:
-            return f"{val:,.0f}"
-        return f"{val:,.2f}"
-
-    def _fmt_market_change(val, col_name):
-        if val is None or pd.isna(val):
-            return None
-        if 'bps' in col_name:
-            return f"{val:+.1f} bps"
-        # _chg_pct: 시트 정규화 후 항상 퍼센트 형태 (예: -1.38)
-        # 자동감지(<=1.5) 는 -1.38 같은 값을 소수로 오인하는 버그가 있어서 제거.
-        return f"{val:+.2f}%"
-
-    # ── 카드 섹션 ──
-    st.subheader("📊 오늘 시장 카드")
-
-    for group_name, items in MARKET_GROUPS:
-        st.markdown(f"**{group_name}**")
-        cols = st.columns(len(items))
-        for col_st, (label, val_col, chg_col) in zip(cols, items):
-            val = latest_market.get(val_col) if val_col in df_market.columns else None
-            chg = latest_market.get(chg_col) if chg_col in df_market.columns else None
-            val_str = _fmt_market_value(val, val_col)
-            chg_str = _fmt_market_change(chg, chg_col)
-            col_st.metric(label, val_str, delta=chg_str)
-
-    # ── 선 차트 섹션 ──
-    st.divider()
-    st.subheader("📈 추세 비교")
-
-    # 차트 컨트롤
-    cc1, cc2, cc3 = st.columns([2, 1, 1])
-    all_indices = [item[0] for _, items in MARKET_GROUPS for item in items]
-    label_to_col = {item[0]: item[1] for _, items in MARKET_GROUPS for item in items}
-
-    with cc1:
-        default_indices = [
-            i for i in ['KOSPI', 'NASDAQ', 'USD/KRW']
-            if i in all_indices and label_to_col[i] in df_market.columns
-        ]
-        selected_indices = st.multiselect(
-            "지표 선택 (여러 개 비교 가능)",
-            options=all_indices,
-            default=default_indices,
-        )
-    with cc2:
-        time_range = st.selectbox(
-            "기간",
-            ["WTD", "MTD", "QTD", "YTD", "1주", "1달", "3달", "6달", "1년", "전체"],
-            index=6,  # 기본 '3달'
-        )
-    with cc3:
-        normalize = st.toggle(
-            "정규화",
-            value=True,
-            help="여러 지표를 같은 스케일로 비교 (시작점=100)",
-        )
-
-    # 시간 범위 적용
-    if time_range == "전체":
-        df_chart = df_market.copy()
-    elif time_range == "WTD":
-        # 이번주 월요일부터 (월=0, 일=6)
-        days_since_mon = latest_market_date.weekday()
-        cutoff = latest_market_date - pd.Timedelta(days=days_since_mon)
-        df_chart = df_market[df_market['_date'] >= cutoff]
-    elif time_range == "MTD":
-        # 이번 달 1일부터
-        cutoff = pd.Timestamp(year=latest_market_date.year,
-                              month=latest_market_date.month, day=1)
-        df_chart = df_market[df_market['_date'] >= cutoff]
-    elif time_range == "QTD":
-        # 이번 분기 첫 달 1일부터 (Q1=1월, Q2=4월, Q3=7월, Q4=10월)
-        q_start_month = ((latest_market_date.month - 1) // 3) * 3 + 1
-        cutoff = pd.Timestamp(year=latest_market_date.year,
-                              month=q_start_month, day=1)
-        df_chart = df_market[df_market['_date'] >= cutoff]
-    elif time_range == "YTD":
-        # 올해 1월 1일부터
-        cutoff = pd.Timestamp(year=latest_market_date.year, month=1, day=1)
-        df_chart = df_market[df_market['_date'] >= cutoff]
-    else:
-        days_map = {"1주": 7, "1달": 30, "3달": 90, "6달": 180, "1년": 365}
-        cutoff = latest_market_date - pd.Timedelta(days=days_map[time_range])
-        df_chart = df_market[df_market['_date'] >= cutoff]
-
-    if df_chart.empty or not selected_indices:
-        st.info("기간 내 데이터 없음 또는 지표 미선택")
-    else:
-        # 데이터가 너무 적으면 안내
-        if len(df_chart) < 5:
-            st.info(
-                f"📌 '{time_range}' 기간의 거래일 데이터가 **{len(df_chart)}개** 뿐입니다. "
-                f"월/분기/년 초반에 흔한 현상 — 더 긴 추세를 보려면 1달/3달/1년 옵션을 사용해보세요."
-            )
-        fig_market = go.Figure()
-        for idx_label in selected_indices:
-            col = label_to_col.get(idx_label)
-            if not col or col not in df_chart.columns:
-                continue
-            series = df_chart[col].copy()
-            if normalize:
-                first_valid = series.dropna()
-                if not first_valid.empty and first_valid.iloc[0] != 0:
-                    series = series / first_valid.iloc[0] * 100
-            fig_market.add_trace(go.Scatter(
-                x=df_chart['_date'],
-                y=series,
-                name=idx_label,
-                mode='lines',
-                line=dict(width=2),
-                hovertemplate=f'<b>{idx_label}</b><br>%{{x|%Y-%m-%d}}<br>%{{y:,.2f}}<extra></extra>',
-            ))
-
-        title_text = (
-            f"{time_range} 추세"
-            + (" (정규화: 시작=100)" if normalize else " (raw 값)")
-        )
-        fig_market.update_layout(
-            title=dict(text=title_text, font=dict(size=15)),
-            height=460,
-            margin=dict(l=40, r=20, t=60, b=40),
-            font=dict(size=13, family='sans-serif'),
-            yaxis=dict(
-                title=dict(
-                    text="지수 (시작=100)" if normalize else "값",
-                    font=dict(size=13),
-                ),
-                tickfont=dict(size=11),
-                gridcolor='#eeeeee',
-            ),
-            xaxis=dict(
-                tickfont=dict(size=11),
-                tickformat='%Y-%m-%d',  # 항상 날짜 형식 (시간 단위 자동스케일 방지)
-                type='date',
-            ),
-            legend=dict(
-                orientation='h', yanchor='top', y=1.10,
-                xanchor='center', x=0.5, font=dict(size=12),
-            ),
-            plot_bgcolor='white',
-            hovermode='x unified',
-        )
-        st.plotly_chart(fig_market, use_container_width=True)
-
-        # 정규화 설명
-        if normalize:
-            st.caption(
-                "💡 **정규화 모드**: 각 지표의 *기간 시작 시점 값*을 100 으로 맞춰서 표시. "
-                "예: KOSPI 가 3000 → 3300 가면 100 → 110 으로 그려짐. "
-                "절대값이 다른 지표 (KOSPI 3000 vs USD/KRW 1370) 도 같은 스케일에서 비교 가능."
-            )
-        else:
-            st.caption(
-                "💡 **raw 모드**: 각 지표를 실제 값 그대로 그림. "
-                "값 단위가 비슷한 지표끼리 비교할 때 유용."
-            )
-
-    st.stop()  # 시장 동향 뷰는 여기서 종료
 
 # =========================================================
 # [작전 일지 뷰] — 매일 시장 진단 + 매매 기록 + 회고
@@ -927,6 +674,122 @@ if view == "📓 작전 일지":
             ('Gold', 'GOLD_price', 'GOLD_chg_pct'),
             ('BTC', 'BTC_price', 'BTC_chg_pct'),
         ])
+
+        # ─ 추세 비교 차트 (이전 시장 동향 뷰에서 이전) ─
+        if not df_md.empty and '_date' in df_md.columns:
+            st.divider()
+            _section_header("📈 추세 비교")
+
+            # 차트용 라벨 → 컬럼 매핑
+            CHART_INDICES = {
+                'KOSPI': 'KOSPI_price',
+                'KOSDAQ': 'KOSDAQ_price',
+                'S&P 500': 'SP500_price',
+                'NASDAQ': 'NASDAQ_price',
+                'Shanghai': 'SHANGHAI_price',
+                'Nikkei': 'NIKKEI_price',
+                'DAX': 'DAX_price',
+                'USD/KRW': 'USDKRW_price',
+                'USD Index': 'USD_IDX_price',
+                'VIX': 'VIX_price',
+                'US 10Y': 'US_10Y_Bond_rate',
+                'US 30Y': 'US_30Y_Bond_rate',
+                'KR 10Y': 'KR_10Y_Bond_rate',
+                'WTI': 'WTI_price',
+                'GOLD': 'GOLD_price',
+                'BTC': 'BTC_price',
+            }
+            latest_chart_date = df_md['_date'].max()
+
+            cc1, cc2, cc3 = st.columns([2, 1, 1])
+            with cc1:
+                opts = [k for k, v in CHART_INDICES.items() if v in df_md.columns]
+                default_picks = [i for i in ['KOSPI', 'NASDAQ', 'USD/KRW'] if i in opts]
+                sel_indices = st.multiselect(
+                    "지표 선택 (여러 개 비교 가능)",
+                    options=opts, default=default_picks,
+                    key='journal_chart_indices',
+                )
+            with cc2:
+                t_range = st.selectbox(
+                    "기간",
+                    ["WTD", "MTD", "QTD", "YTD", "1주", "1달", "3달", "6달", "1년", "전체"],
+                    index=6,  # 기본 3달
+                    key='journal_chart_range',
+                )
+            with cc3:
+                normalize = st.toggle(
+                    "정규화", value=True,
+                    help="여러 지표를 같은 스케일로 비교 (시작=100)",
+                    key='journal_chart_norm',
+                )
+
+            # 시간 범위 적용
+            if t_range == "전체":
+                df_chart = df_md.copy()
+            elif t_range == "WTD":
+                cutoff = latest_chart_date - pd.Timedelta(days=latest_chart_date.weekday())
+                df_chart = df_md[df_md['_date'] >= cutoff]
+            elif t_range == "MTD":
+                cutoff = pd.Timestamp(year=latest_chart_date.year,
+                                      month=latest_chart_date.month, day=1)
+                df_chart = df_md[df_md['_date'] >= cutoff]
+            elif t_range == "QTD":
+                qm = ((latest_chart_date.month - 1) // 3) * 3 + 1
+                cutoff = pd.Timestamp(year=latest_chart_date.year, month=qm, day=1)
+                df_chart = df_md[df_md['_date'] >= cutoff]
+            elif t_range == "YTD":
+                cutoff = pd.Timestamp(year=latest_chart_date.year, month=1, day=1)
+                df_chart = df_md[df_md['_date'] >= cutoff]
+            else:
+                days_map = {"1주": 7, "1달": 30, "3달": 90, "6달": 180, "1년": 365}
+                cutoff = latest_chart_date - pd.Timedelta(days=days_map[t_range])
+                df_chart = df_md[df_md['_date'] >= cutoff]
+
+            if df_chart.empty or not sel_indices:
+                st.info("기간 내 데이터 없음 또는 지표 미선택")
+            else:
+                if len(df_chart) < 5:
+                    st.info(
+                        f"📌 '{t_range}' 거래일 데이터 {len(df_chart)}개 — "
+                        "월/분기/년 초반엔 흔한 현상. 더 긴 기간 옵션 사용 추천."
+                    )
+                fig_trend = go.Figure()
+                for label in sel_indices:
+                    col = CHART_INDICES.get(label)
+                    if not col or col not in df_chart.columns:
+                        continue
+                    series = df_chart[col].copy()
+                    if normalize:
+                        first_valid = series.dropna()
+                        if not first_valid.empty and first_valid.iloc[0] != 0:
+                            series = series / first_valid.iloc[0] * 100
+                    fig_trend.add_trace(go.Scatter(
+                        x=df_chart['_date'], y=series, name=label, mode='lines',
+                        line=dict(width=2),
+                        hovertemplate=f'<b>{label}</b><br>%{{x|%Y-%m-%d}}<br>%{{y:,.2f}}<extra></extra>',
+                    ))
+                fig_trend.update_layout(
+                    title=dict(
+                        text=f"{t_range} 추세" + (" (정규화: 시작=100)" if normalize else " (raw)"),
+                        font=dict(size=15),
+                    ),
+                    height=460, margin=dict(l=40, r=20, t=60, b=40),
+                    font=dict(size=13, family='sans-serif'),
+                    yaxis=dict(
+                        title=dict(text="지수 (시작=100)" if normalize else "값", font=dict(size=13)),
+                        tickfont=dict(size=11), gridcolor='#eeeeee',
+                    ),
+                    xaxis=dict(tickfont=dict(size=11), tickformat='%Y-%m-%d', type='date'),
+                    legend=dict(orientation='h', yanchor='top', y=1.10,
+                                xanchor='center', x=0.5, font=dict(size=12)),
+                    plot_bgcolor='white', hovermode='x unified',
+                )
+                st.plotly_chart(fig_trend, use_container_width=True)
+                if normalize:
+                    st.caption("💡 **정규화**: 각 지표의 기간 시작값 = 100 으로 맞춤 (스케일 다른 지표 비교 가능)")
+                else:
+                    st.caption("💡 **raw**: 실제 값 그대로 — 단위 비슷한 지표끼리 비교에 적합")
 
     st.divider()
 
@@ -1584,22 +1447,22 @@ if view in ("전체", "멘토 포폴", "HS 포폴"):
             ['계좌', '그룹', '국내 (KRW)', '해외 (외화→KRW)', '미분류', '합계', '비중']
         )
 
-        st.markdown(
-            "**📊 계좌별 자산 분포** "
-            "(국내 = KRW 보유분 / 해외 = 외화 보유분, KRW 환산. "
-            "한국 계좌에서 산 미국 추종 ETF 는 국내로 잡힘)"
-        )
-        st.dataframe(
-            df_breakdown[show_cols].style.format({
-                '국내 (KRW)': '₩{:,.0f}',
-                '해외 (외화→KRW)': '₩{:,.0f}',
-                '미분류': '₩{:,.0f}',
-                '합계': '₩{:,.0f}',
-                '비중': '{:.1f}%',
-            }),
-            use_container_width=True,
-            hide_index=True,
-        )
+        with st.expander("📊 계좌별 자산 분포", expanded=False):
+            st.caption(
+                "국내 = KRW 보유분 / 해외 = 외화 보유분, KRW 환산. "
+                "한국 계좌에서 산 미국 추종 ETF 는 국내로 잡힘."
+            )
+            st.dataframe(
+                df_breakdown[show_cols].style.format({
+                    '국내 (KRW)': '₩{:,.0f}',
+                    '해외 (외화→KRW)': '₩{:,.0f}',
+                    '미분류': '₩{:,.0f}',
+                    '합계': '₩{:,.0f}',
+                    '비중': '{:.1f}%',
+                }),
+                use_container_width=True,
+                hide_index=True,
+            )
 
 # ---------------------------------------------------------
 # [블록 1.7] 연간 KPI 진행
