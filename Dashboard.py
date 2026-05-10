@@ -1038,28 +1038,50 @@ if view == "💼 장중 실시간":
         "최신 가격 보려면 페이지 새로고침 또는 사이드바 *🔄 데이터 새로고침* 클릭"
     )
 
-    # 계좌 선택
+    # 그룹/계좌 선택 — 그룹 우선, 개별 계좌도 가능
     accounts_avail = sorted([a for a in df_dashboard['account_clean'].unique() if a])
     if not accounts_avail:
         st.warning("계좌 데이터가 없습니다.")
         st.stop()
 
-    default_idx = (accounts_avail.index('220914426167')
-                   if '220914426167' in accounts_avail else 0)
-    selected_acc = st.selectbox(
-        "계좌 선택",
-        accounts_avail,
+    # 그룹 옵션 (먼저 보여줌) + 개별 계좌 옵션 (구분선)
+    GROUP_OPTIONS = {
+        "🌐 전체 (멘토 + HS)": [a for a in accounts_avail if a in (MENTOR_ACCS + HS_ACCS)],
+        "📈 멘토 포폴 (전체)": [a for a in accounts_avail if a in MENTOR_ACCS],
+        "🇰🇷 HS 포폴 (전체)": [a for a in accounts_avail if a in HS_ACCS],
+    }
+    options = list(GROUP_OPTIONS.keys()) + ["─── 개별 계좌 ───"] + accounts_avail
+
+    default_label = "🇰🇷 HS 포폴 (전체)"
+    default_idx = options.index(default_label) if default_label in options else 0
+
+    selected = st.selectbox(
+        "그룹 / 계좌 선택",
+        options,
         index=default_idx,
-        help="장중 실시간 가격으로 오늘 손익을 계산합니다.",
+        help="그룹을 선택하면 그 그룹의 모든 계좌의 보유 종목을 한번에 표시.",
     )
 
-    # 해당 계좌의 보유 종목 (현금 제외, 수량 > 0)
-    sub_rt = df_dashboard[df_dashboard['account_clean'] == selected_acc].copy()
+    # 선택된 항목 → 계좌 리스트
+    if selected == "─── 개별 계좌 ───":
+        st.info("위에서 개별 계좌를 선택하세요.")
+        st.stop()
+    elif selected in GROUP_OPTIONS:
+        accounts_in_scope = GROUP_OPTIONS[selected]
+    else:
+        accounts_in_scope = [selected]
+
+    if not accounts_in_scope:
+        st.warning(f"'{selected}' 에 해당하는 계좌가 없습니다.")
+        st.stop()
+
+    # 해당 계좌들의 보유 종목 (현금 제외, 수량 > 0)
+    sub_rt = df_dashboard[df_dashboard['account_clean'].isin(accounts_in_scope)].copy()
     sub_rt = sub_rt[~sub_rt['ticker'].astype(str).str.startswith('CASH')]
     sub_rt = sub_rt[sub_rt['quantity'].abs() > 0]
 
     if sub_rt.empty:
-        st.info("이 계좌에 보유 종목이 없습니다 (현금만 있거나 데이터 없음).")
+        st.info("선택한 그룹/계좌에 보유 종목이 없습니다.")
         st.stop()
 
     # 한국 / 외국 분리
@@ -1085,31 +1107,34 @@ if view == "💼 장중 실시간":
             'country': str(r.get('country', '') or '').strip(),
         }
 
-    kr_rows = []      # [(ticker, name, qty, avg_cost), ...]
-    foreign_rows = [] # [(ticker, name, qty, avg_cost, exchange, yf_ticker), ...]
+    kr_rows = []      # [(ticker, name, qty, avg_cost, account), ...]
+    foreign_rows = [] # [(ticker, name, qty, avg_cost, exchange, yf_ticker, account), ...]
     for _, r in sub_rt.iterrows():
         tk = str(r['ticker']).strip()
         nm = str(r.get('name', tk))
         qty = float(r['quantity'])
         avg_cost = float(r.get('avg_cost_krw', 0) or 0)
         ex = str(r.get('exchange', '')).upper()
+        acc = str(r.get('account_clean', '') or r.get('account', '')).strip()
 
         if _is_kr_ticker(tk, ex):
-            kr_rows.append((tk, nm, qty, avg_cost))
+            kr_rows.append((tk, nm, qty, avg_cost, acc))
         else:
             yf_t = _build_yf_ticker(tk, ex)
-            foreign_rows.append((tk, nm, qty, avg_cost, ex, yf_t))
+            foreign_rows.append((tk, nm, qty, avg_cost, ex, yf_t, acc))
 
     # 실시간 가격 조회
     with st.spinner(f"실시간 가격 조회 중... (한국 {len(kr_rows)}개 / 외국 {len(foreign_rows)}개)"):
-        # 한국: 네이버 (sequential) — kr_rows: (ticker, name, qty, avg_cost)
+        # 한국: 네이버 (sequential) — kr_rows: (ticker, name, qty, avg_cost, acc)
         kr_prices = {}
-        for tk, _, _, _ in kr_rows:
+        for tk, _, _, _, _ in kr_rows:
+            if tk in kr_prices:
+                continue  # 같은 ticker 여러 계좌 보유 — 한 번만 fetch
             r = get_naver_intraday(tk)
             if r:
                 kr_prices[tk] = r
 
-        # 외국: yfinance batch — foreign_rows: (ticker, name, qty, avg_cost, exchange, yf_ticker)
+        # 외국: yfinance batch — foreign_rows: (ticker, name, qty, avg_cost, exchange, yf_ticker, acc)
         foreign_yf_tuple = tuple(sorted(set(
             row[5] for row in foreign_rows  # yf_ticker is index 5
         )))
@@ -1128,7 +1153,7 @@ if view == "💼 장중 실시간":
     def _qty_fmt(q):
         return int(q) if q == int(q) else round(q, 2)
 
-    def _build_row(tk, nm, qty, avg_cost, prev_orig, curr_orig, fx):
+    def _build_row(tk, nm, qty, avg_cost, acc, prev_orig, curr_orig, fx):
         prev_krw = prev_orig * fx
         curr_krw = curr_orig * fx
         change_pct = ((curr_orig - prev_orig) / prev_orig * 100) if prev_orig > 0 else 0
@@ -1137,8 +1162,9 @@ if view == "💼 장중 실시간":
         current_value = curr_krw * qty
         cumulative_pl = current_value - cost_total
         attrs = attr_lookup.get(tk, {})
-        # 컬럼 순서: 종목명/테마/포지션/국가 → 매입/평가/누적 → 오늘 변동
+        # 컬럼 순서: 계좌 → 종목명/테마/포지션/국가 → 매입/평가/누적 → 오늘 변동
         return {
+            '계좌': acc,
             '종목명': nm,
             '테마': attrs.get('theme', ''),
             '포지션': attrs.get('postion', ''),
@@ -1153,12 +1179,14 @@ if view == "💼 장중 실시간":
             '변동률': change_pct,
             '오늘 손익': today_pl,
             '_ok': True,
+            '_ticker': tk,  # 실패 시 reference 용
         }
 
-    def _build_failed_row(tk, nm, qty, avg_cost):
+    def _build_failed_row(tk, nm, qty, avg_cost, acc):
         cost_total = avg_cost * qty
         attrs = attr_lookup.get(tk, {})
         return {
+            '계좌': acc,
             '종목명': nm,
             '테마': attrs.get('theme', ''),
             '포지션': attrs.get('postion', ''),
@@ -1169,25 +1197,29 @@ if view == "💼 장중 실시간":
             '전일종가': 0, '현재가': 0,
             '변동률': 0, '오늘 손익': 0,
             '_ok': False,
+            '_ticker': tk,
         }
 
-    for tk, nm, qty, avg_cost in kr_rows:
+    for tk, nm, qty, avg_cost, acc in kr_rows:
         r = kr_prices.get(tk)
         if r and r.get('prev_close', 0) > 0:
-            result_rows.append(_build_row(tk, nm, qty, avg_cost, r['prev_close'], r['current'], 1.0))
+            result_rows.append(_build_row(tk, nm, qty, avg_cost, acc, r['prev_close'], r['current'], 1.0))
         else:
-            result_rows.append(_build_failed_row(tk, nm, qty, avg_cost))
+            result_rows.append(_build_failed_row(tk, nm, qty, avg_cost, acc))
 
-    for tk, nm, qty, avg_cost, ex, yf_t in foreign_rows:
+    for tk, nm, qty, avg_cost, ex, yf_t, acc in foreign_rows:
         r = foreign_yf_data.get(yf_t)
         if r and r.get('prev_close', 0) > 0:
             ccy = EXCHANGE_TO_CURRENCY.get(ex, 'USD')
             fx = fx_rates.get(ccy, 1.0)
-            result_rows.append(_build_row(tk, nm, qty, avg_cost, r['prev_close'], r['current'], fx))
+            result_rows.append(_build_row(tk, nm, qty, avg_cost, acc, r['prev_close'], r['current'], fx))
         else:
-            result_rows.append(_build_failed_row(tk, nm, qty, avg_cost))
+            result_rows.append(_build_failed_row(tk, nm, qty, avg_cost, acc))
 
-    df_rt = pd.DataFrame(result_rows).sort_values('변동률', ascending=False)
+    # 계좌 우선 정렬 (같은 계좌끼리 시각적으로 묶임), 그 안에서 변동률 desc
+    df_rt = pd.DataFrame(result_rows).sort_values(
+        ['계좌', '변동률'], ascending=[True, False]
+    ).reset_index(drop=True)
 
     # 요약 메트릭 (4개)
     ok_rows = df_rt[df_rt['_ok']]
@@ -1216,26 +1248,59 @@ if view == "💼 장중 실시간":
         except: pass
         return ''
 
-    display_rt = df_rt.drop(columns=['_ok'])
-    styled_rt = display_rt.style.format({
-        '매입가': '₩{:,.0f}',
-        '매입금액': '₩{:,.0f}',
-        '전일종가': '₩{:,.0f}',
-        '현재가': '₩{:,.0f}',
-        '변동률': '{:+.2f}%',
-        '오늘 손익': '₩{:+,.0f}',
-        '현재 평가액': '₩{:,.0f}',
-        '누적 손익': '₩{:+,.0f}',
-    }).map(_color_change_rt, subset=['변동률', '오늘 손익', '누적 손익'])
+    # 계좌별 행 배경색 (그룹 뷰에서 계좌 시각적 구분)
+    ACCOUNT_COLORS = {
+        '60271589':     '#fff3e0',  # 멘토 — 옅은 주황
+        '53648897':     '#fffde7',  # 멘토 — 옅은 노랑
+        '53649012':     '#e3f2fd',  # HS 일반 — 옅은 파랑
+        '856045053982': '#e8f5e9',  # HS 일반 — 옅은 녹
+        '220914426167': '#f3e5f5',  # HS 퇴직연금 — 옅은 보라
+        '717190227129': '#fce4ec',  # HS 퇴직연금 — 옅은 분홍
+    }
+
+    def _color_account_row(row):
+        acc = str(row.get('계좌', ''))
+        bg = ACCOUNT_COLORS.get(acc, '')
+        return [f'background-color: {bg}' if bg else ''] * len(row)
+
+    display_rt = df_rt.drop(columns=['_ok', '_ticker'])
+    styled_rt = (
+        display_rt.style
+        .format({
+            '매입가': '₩{:,.0f}',
+            '매입금액': '₩{:,.0f}',
+            '전일종가': '₩{:,.0f}',
+            '현재가': '₩{:,.0f}',
+            '변동률': '{:+.2f}%',
+            '오늘 손익': '₩{:+,.0f}',
+            '현재 평가액': '₩{:,.0f}',
+            '누적 손익': '₩{:+,.0f}',
+        })
+        .apply(_color_account_row, axis=1)  # 행 전체 배경 (계좌 색)
+        .map(_color_change_rt, subset=['변동률', '오늘 손익', '누적 손익'])
+    )
 
     st.dataframe(styled_rt, use_container_width=True, hide_index=True,
-                 height=min(600, 60 + 38 * len(display_rt)))
+                 height=min(700, 60 + 38 * len(display_rt)))
+
+    # 색상 범례 (그룹/전체 뷰일 때만 보여주면 의미 있음)
+    if len(accounts_in_scope) > 1:
+        legend_parts = []
+        for acc in accounts_in_scope:
+            color = ACCOUNT_COLORS.get(acc, '#f5f5f5')
+            legend_parts.append(
+                f"<span style='background:{color}; padding:2px 8px; border-radius:4px; margin-right:6px'>{acc}</span>"
+            )
+        st.markdown(
+            "**📌 계좌 색상**: " + ' '.join(legend_parts),
+            unsafe_allow_html=True,
+        )
 
     failed = df_rt[~df_rt['_ok']]
     if not failed.empty:
         st.warning(
             f"⚠️ 가격 조회 실패 {len(failed)}개: "
-            + ', '.join(failed['Ticker'].astype(str).head(10).tolist())
+            + ', '.join(failed['_ticker'].astype(str).head(10).tolist())
             + ('...' if len(failed) > 10 else '')
         )
 
