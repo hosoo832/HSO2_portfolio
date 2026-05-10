@@ -1504,10 +1504,15 @@ with c4:
     )
 
 # ---------------------------------------------------------
-# [Hero 보조] 계좌별 자산 분포 (멘토 / HS 뷰만)
+# [Hero 보조] 계좌별 자산 분포 (전체 / 멘토 / HS 뷰)
 # ---------------------------------------------------------
-if view in ("멘토 포폴", "HS 포폴"):
-    target_accs_for_breakdown = MENTOR_ACCS if view == "멘토 포폴" else HS_ACCS
+if view in ("전체", "멘토 포폴", "HS 포폴"):
+    if view == "전체":
+        target_accs_for_breakdown = MENTOR_ACCS + HS_ACCS
+    elif view == "멘토 포폴":
+        target_accs_for_breakdown = MENTOR_ACCS
+    else:
+        target_accs_for_breakdown = HS_ACCS
 
     def _classify_region(row):
         """국내 vs 해외 분류 — '진짜 해외 계좌 잔고' 의 의미.
@@ -1515,18 +1520,24 @@ if view in ("멘토 포폴", "HS 포폴"):
         - 해외 = 외화로 보유 (직접 매수한 외국주, 외화 예수금)
         """
         ticker = str(row.get('ticker', ''))
-        # 현금: ticker 접두사로 판단
         if ticker.startswith('CASH_KRW'):
             return '국내'
         if ticker.startswith('CASH_FX'):
             return '해외'
-        # 일반 종목: 통화로 판단
         currency = str(row.get('currency', '')).strip().upper()
         if currency == 'KRW':
             return '국내'
         if currency in ('', 'NAN', 'NONE'):
             return '미분류'
-        return '해외'  # USD, HKD, CNY, JPY 등
+        return '해외'
+
+    def _account_group(acc):
+        """계좌 → 그룹명."""
+        if acc in MENTOR_ACCS:
+            return '멘토'
+        if acc in HS_ACCS:
+            return 'HS'
+        return '기타'
 
     breakdown_rows = []
     for acc in target_accs_for_breakdown:
@@ -1540,6 +1551,7 @@ if view in ("멘토 포폴", "HS 포폴"):
         total = sub['market_value_krw'].sum()
         breakdown_rows.append({
             '계좌': acc,
+            '그룹': _account_group(acc),
             '국내 (KRW)': domestic,
             '해외 (외화→KRW)': foreign,
             '미분류': unclassified,
@@ -1548,20 +1560,29 @@ if view in ("멘토 포폴", "HS 포폴"):
 
     if breakdown_rows:
         df_breakdown = pd.DataFrame(breakdown_rows)
+        # 비중 % 계산 (합계 행 포함 전 — 분모는 모든 계좌 합)
+        grand_total = df_breakdown['합계'].sum()
+        df_breakdown['비중'] = (
+            df_breakdown['합계'] / grand_total * 100 if grand_total > 0 else 0.0
+        )
+
         # 합계 행 추가
         total_row = pd.DataFrame([{
             '계좌': '**합계**',
+            '그룹': '',
             '국내 (KRW)': df_breakdown['국내 (KRW)'].sum(),
             '해외 (외화→KRW)': df_breakdown['해외 (외화→KRW)'].sum(),
             '미분류': df_breakdown['미분류'].sum(),
             '합계': df_breakdown['합계'].sum(),
+            '비중': 100.0,
         }])
         df_breakdown = pd.concat([df_breakdown, total_row], ignore_index=True)
 
         # 미분류가 0이면 컬럼 숨김
-        show_cols = ['계좌', '국내 (KRW)', '해외 (외화→KRW)', '합계']
-        if df_breakdown['미분류'].sum() > 0:
-            show_cols = ['계좌', '국내 (KRW)', '해외 (외화→KRW)', '미분류', '합계']
+        base_cols = ['계좌', '그룹', '국내 (KRW)', '해외 (외화→KRW)', '합계', '비중']
+        show_cols = base_cols if df_breakdown['미분류'].sum() == 0 else (
+            ['계좌', '그룹', '국내 (KRW)', '해외 (외화→KRW)', '미분류', '합계', '비중']
+        )
 
         st.markdown(
             "**📊 계좌별 자산 분포** "
@@ -1574,6 +1595,7 @@ if view in ("멘토 포폴", "HS 포폴"):
                 '해외 (외화→KRW)': '₩{:,.0f}',
                 '미분류': '₩{:,.0f}',
                 '합계': '₩{:,.0f}',
+                '비중': '{:.1f}%',
             }),
             use_container_width=True,
             hide_index=True,
