@@ -829,16 +829,16 @@ if view == "📓 작전 일지":
                 del st.session_state[_editor_key]
             st.rerun()
 
-    st.warning(
-        "⚠️ **D 매매내역 표 입력 시 주의**: 셀에 타이핑 후 반드시 **Enter** 또는 **Tab** 키로 commit 한 다음 "
-        "저장 버튼 클릭. 안 그러면 Streamlit form 이 마지막 셀 입력을 못 잡아서 빈 값으로 저장됩니다."
+    st.caption(
+        "💡 D 매매내역 표: 셀에 입력 후 **Enter** 또는 **Tab** 으로 commit 한 다음 저장 버튼 클릭."
     )
 
     # ============================================================
     # 섹션 B-F — 폼 (수동 입력)
     # ============================================================
-    # form key 에 날짜를 포함시켜 — 날짜 바뀌면 form 재초기화 (이전 입력 보존 안 됨)
-    with st.form(f"journal_form_{sel_date_str}", clear_on_submit=False):
+    # ⚠️ 일반 container 사용 — form 의 widget 입력 batching 문제 회피.
+    # 각 widget 의 변경이 즉시 session_state 에 반영됨 → data_editor 입력 손실 없음.
+    with st.container():
         st.markdown("### 📝 B. 경제 지표")
         econ = st.text_area(
             "경제 지표 (CPI, 실업수당, 금리 결정 등 — 그날 발표된 것만)",
@@ -1048,7 +1048,12 @@ if view == "📓 작전 일지":
             key=f'journal_plan_{sel_date_str}',
         )
 
-        submitted = st.form_submit_button("💾 저장", type="primary", use_container_width=True)
+        submitted = st.button(
+            "💾 저장",
+            type="primary",
+            use_container_width=True,
+            key=f'journal_save_btn_{sel_date_str}',
+        )
 
         if submitted:
             # 매매 내역 → 8필드 직렬화: 계좌|그룹|매매|종목명|가격|정산금액|그룹비중|이유
