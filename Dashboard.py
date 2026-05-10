@@ -958,55 +958,59 @@ if view == "📓 작전 일지":
         # session_state 의 reload 신호 (form 바깥의 reload 버튼이 설정)
         should_reload_raw = st.session_state.pop('_journal_reload_raw', False)
 
-        empty_default = pd.DataFrame(
-            [{'계좌': '', '그룹': '', '매매': '', '종목명': '',
-              '가격': '', '정산금액': '', '그룹비중': '', '이유': ''}] * 3
-        )
+        empty_default_rows = [
+            {'계좌': '', '그룹': '', '매매': '', '종목명': '',
+             '가격': '', '정산금액': '', '그룹비중': '', '이유': ''}
+        ] * 3
+
+        # ⚡ trades_init 을 session_state 에 캐시 — 매 rerun 마다 새 DataFrame 생성을 막아
+        # data_editor 가 user edits 를 reset 하는 문제 해결
+        _init_key = f'_trades_init_data_{sel_date_str}'
 
         if should_reload_raw:
             with st.spinner("raw 시트 로딩 중... (3000+ 행 처리 ~5초)"):
                 auto_trades = _fetch_trades_for_date(sel_date_str)
             if auto_trades:
-                trades_init = pd.DataFrame(auto_trades)
+                st.session_state[_init_key] = pd.DataFrame(auto_trades)
                 st.success(f"📥 raw 시트에서 {len(auto_trades)}건 매매 불러옴")
             else:
-                trades_init = empty_default
+                st.session_state[_init_key] = pd.DataFrame(empty_default_rows)
                 st.info(f"raw 시트에 {sel_date_str} 매매 없음")
-        elif existing_trades:
-            # 저장된 내용 — 신/중간/구 포맷 모두 지원
-            rows = []
-            for line in existing_trades.split('\n'):
-                parts = line.split('|')
-                if len(parts) >= 8:
-                    # 최신 포맷: 계좌|그룹|매매|종목명|가격|정산금액|그룹비중|이유
-                    rows.append({
-                        '계좌': parts[0], '그룹': parts[1], '매매': parts[2],
-                        '종목명': parts[3], '가격': parts[4],
-                        '정산금액': parts[5], '그룹비중': parts[6], '이유': parts[7],
-                    })
-                elif len(parts) == 6:
-                    # 중간 포맷: 계좌|그룹|매매|종목명|가격|이유 (정산금액/그룹비중 빈칸)
-                    rows.append({
-                        '계좌': parts[0], '그룹': parts[1], '매매': parts[2],
-                        '종목명': parts[3], '가격': parts[4],
-                        '정산금액': '', '그룹비중': '', '이유': parts[5],
-                    })
-                else:
-                    # 구 포맷: 매매|종목명|가격|수익률|이유 (수익률 버림)
-                    while len(parts) < 5:
-                        parts.append('')
-                    rows.append({
-                        '계좌': '', '그룹': '',
-                        '매매': parts[0], '종목명': parts[1], '가격': parts[2],
-                        '정산금액': '', '그룹비중': '', '이유': parts[4],
-                    })
-            trades_init = pd.DataFrame(rows)
-        else:
-            trades_init = empty_default
-            st.caption(
-                "💡 이 날짜의 raw 매매내역 자동 채우려면 위의 "
-                "**📥 raw 시트에서 매매 다시 불러오기** 버튼 클릭."
-            )
+        elif _init_key not in st.session_state:
+            # 처음 — 저장된 내용 파싱 또는 빈 기본값
+            if existing_trades:
+                rows = []
+                for line in existing_trades.split('\n'):
+                    parts = line.split('|')
+                    if len(parts) >= 8:
+                        rows.append({
+                            '계좌': parts[0], '그룹': parts[1], '매매': parts[2],
+                            '종목명': parts[3], '가격': parts[4],
+                            '정산금액': parts[5], '그룹비중': parts[6], '이유': parts[7],
+                        })
+                    elif len(parts) == 6:
+                        rows.append({
+                            '계좌': parts[0], '그룹': parts[1], '매매': parts[2],
+                            '종목명': parts[3], '가격': parts[4],
+                            '정산금액': '', '그룹비중': '', '이유': parts[5],
+                        })
+                    else:
+                        while len(parts) < 5:
+                            parts.append('')
+                        rows.append({
+                            '계좌': '', '그룹': '',
+                            '매매': parts[0], '종목명': parts[1], '가격': parts[2],
+                            '정산금액': '', '그룹비중': '', '이유': parts[4],
+                        })
+                st.session_state[_init_key] = pd.DataFrame(rows)
+            else:
+                st.session_state[_init_key] = pd.DataFrame(empty_default_rows)
+                st.caption(
+                    "💡 이 날짜의 raw 매매내역 자동 채우려면 위의 "
+                    "**📥 raw 시트에서 매매 다시 불러오기** 버튼 클릭."
+                )
+
+        trades_init = st.session_state[_init_key]
 
         trades_edited = st.data_editor(
             trades_init,
