@@ -1113,6 +1113,14 @@ if view == "📓 작전 일지":
                 except Exception as ve:
                     verify_msg = f"검증 중 오류: {ve}"
 
+                # 저장 성공 → trades_init 캐시 무효화 (다음 렌더에서 시트 새 데이터로 재로드)
+                # + data_editor 의 edit 상태 클리어 (이미 시트에 반영됐으니)
+                if _init_key in st.session_state:
+                    del st.session_state[_init_key]
+                _editor_key_clear = f"trades_editor_{sel_date_str}"
+                if _editor_key_clear in st.session_state:
+                    del st.session_state[_editor_key_clear]
+
                 if result == 'updated':
                     st.success(f"✅ {sel_date_str} 일지 갱신 (매매 {len(trades_lines)}건)")
                 else:
