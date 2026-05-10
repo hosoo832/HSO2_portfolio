@@ -1030,12 +1030,13 @@ if view == "📓 작전 일지":
                 grp = str(r.get('그룹', '')).strip()
                 action = str(r.get('매매', '')).strip()
                 name = str(r.get('종목명', '')).strip()
-                if not action and not name:
-                    continue
                 price = str(r.get('가격', '')).strip()
                 settle = str(r.get('정산금액', '')).strip()
                 ratio = str(r.get('그룹비중', '')).strip()
                 reason = str(r.get('이유', '')).strip()
+                # 진짜 완전 빈 행만 스킵 (어느 하나라도 입력 있으면 저장 — 이유만 적어도 보존)
+                if not any([acc, grp, action, name, price, settle, ratio, reason]):
+                    continue
                 trades_lines.append(f"{acc}|{grp}|{action}|{name}|{price}|{settle}|{ratio}|{reason}")
             trades_text = '\n'.join(trades_lines)
 
