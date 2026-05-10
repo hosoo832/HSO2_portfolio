@@ -794,6 +794,19 @@ if view == "📓 작전 일지":
     st.divider()
 
     # ============================================================
+    # 폼 바깥의 컨트롤 (즉시 반응) — raw 매매내역 reload 버튼
+    # ============================================================
+    btn_col, _ = st.columns([1, 3])
+    with btn_col:
+        if st.button(
+            "📥 raw 시트에서 매매 다시 불러오기",
+            help="이 날짜의 raw_domestic + raw_international 매매를 가져와 D 섹션에 채움 (현재 입력 덮어씀)",
+            use_container_width=True,
+        ):
+            st.session_state['_journal_reload_raw'] = True
+            st.rerun()
+
+    # ============================================================
     # 섹션 B-F — 폼 (수동 입력)
     # ============================================================
     with st.form("journal_form", clear_on_submit=False):
@@ -816,9 +829,91 @@ if view == "📓 작전 일지":
         )
 
         st.markdown("### 💸 D. 매매 내역과 이유")
+
+        # raw 시트에서 해당 날짜 매매 자동 import 헬퍼
+        def _fetch_trades_for_date(date_str):
+            """raw_domestic + raw_international 에서 매매 거래만 추출."""
+            rows = []
+            # 국내
+            try:
+                df_dom = load_sheet("raw_domestic")
+                if not df_dom.empty and '거래일자' in df_dom.columns:
+                    df_dom = df_dom.copy()
+                    df_dom['_date_iso'] = pd.to_datetime(
+                        df_dom['거래일자'], errors='coerce'
+                    ).dt.strftime('%Y-%m-%d')
+                    today_dom = df_dom[df_dom['_date_iso'] == date_str]
+                    for _, r in today_dom.iterrows():
+                        search = str(r.get('거래종류', '')) + ' ' + str(r.get('적요명', ''))
+                        if not ('보통매매' in search or '재투자' in search):
+                            continue
+                        action = '매도' if '매도' in search else '매수'
+                        name = str(r.get('종목명', '')).strip()
+                        qty = str(r.get('거래수량', '')).strip().replace(',', '')
+                        amt = str(r.get('정산금액', '')).strip().replace(',', '')
+                        try:
+                            qf, af = float(qty), float(amt)
+                            price = af / qf if qf > 0 else 0
+                            price_str = f"₩{int(price):,}" if price > 0 else amt
+                        except Exception:
+                            price_str = ''
+                        rows.append({
+                            '매매': action, '종목명': name,
+                            '가격': price_str, '수익률': '', '이유': '',
+                        })
+            except Exception:
+                pass
+
+            # 해외
+            try:
+                df_intl = load_sheet("raw_international")
+                if not df_intl.empty and '거래일자' in df_intl.columns:
+                    df_intl = df_intl.copy()
+                    df_intl['_date_iso'] = pd.to_datetime(
+                        df_intl['거래일자'], errors='coerce'
+                    ).dt.strftime('%Y-%m-%d')
+                    today_intl = df_intl[df_intl['_date_iso'] == date_str]
+                    for _, r in today_intl.iterrows():
+                        memo = str(r.get('적요명', '')).strip()
+                        if memo not in ('매수', '매도'):
+                            continue
+                        action = memo
+                        name = str(r.get('종목명', '')).strip()
+                        qty = str(r.get('거래수량', '')).strip().replace(',', '')
+                        amt = str(r.get('정산금액(외)', '')).strip().replace(',', '')
+                        ccy = str(r.get('통화', '')).strip()
+                        try:
+                            qf, af = float(qty), float(amt)
+                            price = af / qf if qf > 0 else 0
+                            price_str = f"{price:.2f} {ccy}" if price > 0 else amt
+                        except Exception:
+                            price_str = ''
+                        rows.append({
+                            '매매': action, '종목명': name,
+                            '가격': price_str, '수익률': '', '이유': '',
+                        })
+            except Exception:
+                pass
+            return rows
+
         # 기존 매매 내역 파싱
         existing_trades = existing.get('매매내역', '').strip()
-        if existing_trades:
+        # session_state 의 reload 신호 (form 바깥의 reload 버튼이 설정)
+        should_reload_raw = st.session_state.pop('_journal_reload_raw', False)
+
+        if should_reload_raw:
+            # 강제 재로드
+            auto_trades = _fetch_trades_for_date(sel_date_str)
+            if auto_trades:
+                trades_init = pd.DataFrame(auto_trades)
+                st.success(f"📥 raw 시트에서 {len(auto_trades)}건 매매 불러옴 (기존 입력 덮어씀)")
+            else:
+                trades_init = pd.DataFrame(
+                    [{'매매': '', '종목명': '', '가격': '', '수익률': '', '이유': ''}] * 3
+                )
+                st.info(f"raw 시트에 {sel_date_str} 매매 없음")
+        elif existing_trades:
+            # 저장된 내용 (사용자 편집 보존)
             rows = []
             for line in existing_trades.split('\n'):
                 parts = line.split('|')
@@ -830,9 +925,18 @@ if view == "📓 작전 일지":
                 })
             trades_init = pd.DataFrame(rows)
         else:
-            trades_init = pd.DataFrame(
-                [{'매매': '', '종목명': '', '가격': '', '수익률': '', '이유': ''}] * 3
-            )
+            # 첫 방문 — raw 자동 시도
+            auto_trades = _fetch_trades_for_date(sel_date_str)
+            if auto_trades:
+                trades_init = pd.DataFrame(auto_trades)
+                st.info(
+                    f"📥 raw 시트에서 {sel_date_str} 매매 {len(auto_trades)}건 자동 import — "
+                    "이유 입력 후 저장하세요"
+                )
+            else:
+                trades_init = pd.DataFrame(
+                    [{'매매': '', '종목명': '', '가격': '', '수익률': '', '이유': ''}] * 3
+                )
 
         trades_edited = st.data_editor(
             trades_init,
