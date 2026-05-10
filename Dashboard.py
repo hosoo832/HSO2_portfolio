@@ -403,17 +403,34 @@ if view == "📓 작전 일지":
     # ---- journal_log 시트 헬퍼 ----
     JOURNAL_HEADERS = ['date', 'updated_at', '시장요약', '경제지표', '시장이슈', '매매내역', '전투일지', '전투계획']
 
+    def _normalize_date_str(s):
+        """Sheets locale 변환된 날짜를 YYYY-MM-DD 로 정규화.
+        '2026. 5. 8.' / '2026. 5. 8 (수)' / '2026-05-08' 모두 → '2026-05-08'
+        """
+        s = str(s).strip()
+        if not s:
+            return s
+        s = re.sub(r'\s*\([^)]*\)\s*', '', s)
+        s = re.sub(r'[\.\s/]+', '-', s).strip('-')
+        try:
+            return pd.to_datetime(s, errors='coerce').strftime('%Y-%m-%d')
+        except Exception:
+            return s
+
     @st.cache_data(ttl=30, show_spinner=False)
     def _load_journal_raw():
         gc = get_gspread_client()
         try:
             ws = gc.open(SHEET_NAME).worksheet("journal_log")
         except Exception:
-            return None  # 시트 없음
+            return None
         vals = ws.get_all_values()
         if not vals:
             return None
         df = pd.DataFrame(vals[1:], columns=vals[0])
+        # date 컬럼 locale 정규화 (Sheets 가 '2026. 5. 8.' 로 저장한 경우 대응)
+        if 'date' in df.columns:
+            df['date'] = df['date'].apply(_normalize_date_str)
         return df
 
     def _ensure_journal_sheet():
@@ -481,23 +498,26 @@ if view == "📓 작전 일지":
         return ws
 
     def _save_journal(date_str, fields):
-        """날짜 기준으로 upsert. fields = dict (경제지표, 시장이슈, ...)"""
+        """날짜 기준으로 upsert. fields = dict (경제지표, 시장이슈, ...)
+        - value_input_option='RAW' 사용: Sheets 의 자동 date 파싱 회피 (locale 변환 X)
+        - 기존 행 매칭 시 normalize 비교 (옛 데이터 호환)
+        """
         ws = _ensure_journal_sheet()
         all_vals = ws.get_all_values()
-        # 헤더 검증/누락 시 보정
         if not all_vals:
-            ws.append_row(JOURNAL_HEADERS, value_input_option='USER_ENTERED')
+            ws.append_row(JOURNAL_HEADERS, value_input_option='RAW')
             all_vals = [JOURNAL_HEADERS]
 
         headers = all_vals[0]
         date_col_idx = headers.index('date') if 'date' in headers else 0
 
-        # 기존 행 찾기
+        # 기존 행 찾기 — locale 변환된 날짜도 정규화해서 비교
+        # 중복 있으면 가장 최근 (마지막) 행을 update 대상으로
         target_row_idx = None
-        for i, row in enumerate(all_vals[1:], start=2):  # 1-indexed sheet rows
-            if len(row) > date_col_idx and row[date_col_idx] == date_str:
-                target_row_idx = i
-                break
+        for i, row in enumerate(all_vals[1:], start=2):
+            if len(row) > date_col_idx:
+                if _normalize_date_str(row[date_col_idx]) == date_str:
+                    target_row_idx = i  # break 안 함 → 마지막 매치 가져감
 
         new_row = [
             date_str,
@@ -511,12 +531,11 @@ if view == "📓 작전 일지":
         ]
 
         if target_row_idx:
-            # update existing
             ws.update(range_name=f"A{target_row_idx}:H{target_row_idx}",
-                      values=[new_row], value_input_option='USER_ENTERED')
+                      values=[new_row], value_input_option='RAW')
             return 'updated'
         else:
-            ws.append_row(new_row, value_input_option='USER_ENTERED')
+            ws.append_row(new_row, value_input_option='RAW')
             return 'created'
 
     # 기존 일지 로드 (있으면)
