@@ -901,16 +901,19 @@ if view == "📓 작전 일지":
         # session_state 의 reload 신호 (form 바깥의 reload 버튼이 설정)
         should_reload_raw = st.session_state.pop('_journal_reload_raw', False)
 
+        empty_default = pd.DataFrame(
+            [{'매매': '', '종목명': '', '가격': '', '수익률': '', '이유': ''}] * 3
+        )
+
         if should_reload_raw:
-            # 강제 재로드
-            auto_trades = _fetch_trades_for_date(sel_date_str)
+            # 사용자가 위 버튼 클릭한 경우만 raw fetch (느림)
+            with st.spinner("raw 시트 로딩 중... (3000+ 행 처리 ~5초)"):
+                auto_trades = _fetch_trades_for_date(sel_date_str)
             if auto_trades:
                 trades_init = pd.DataFrame(auto_trades)
-                st.success(f"📥 raw 시트에서 {len(auto_trades)}건 매매 불러옴 (기존 입력 덮어씀)")
+                st.success(f"📥 raw 시트에서 {len(auto_trades)}건 매매 불러옴")
             else:
-                trades_init = pd.DataFrame(
-                    [{'매매': '', '종목명': '', '가격': '', '수익률': '', '이유': ''}] * 3
-                )
+                trades_init = empty_default
                 st.info(f"raw 시트에 {sel_date_str} 매매 없음")
         elif existing_trades:
             # 저장된 내용 (사용자 편집 보존)
@@ -925,18 +928,12 @@ if view == "📓 작전 일지":
                 })
             trades_init = pd.DataFrame(rows)
         else:
-            # 첫 방문 — raw 자동 시도
-            auto_trades = _fetch_trades_for_date(sel_date_str)
-            if auto_trades:
-                trades_init = pd.DataFrame(auto_trades)
-                st.info(
-                    f"📥 raw 시트에서 {sel_date_str} 매매 {len(auto_trades)}건 자동 import — "
-                    "이유 입력 후 저장하세요"
-                )
-            else:
-                trades_init = pd.DataFrame(
-                    [{'매매': '', '종목명': '', '가격': '', '수익률': '', '이유': ''}] * 3
-                )
+            # 첫 방문 — 빈 표만 (자동 raw fetch X, 페이지 로딩 빠르게)
+            trades_init = empty_default
+            st.caption(
+                "💡 이 날짜의 raw 매매내역 자동 채우려면 위의 "
+                "**📥 raw 시트에서 매매 다시 불러오기** 버튼 클릭."
+            )
 
         trades_edited = st.data_editor(
             trades_init,
