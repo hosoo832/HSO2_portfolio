@@ -809,7 +809,8 @@ if view == "📓 작전 일지":
     # ============================================================
     # 섹션 B-F — 폼 (수동 입력)
     # ============================================================
-    with st.form("journal_form", clear_on_submit=False):
+    # form key 에 날짜를 포함시켜 — 날짜 바뀌면 form 재초기화 (이전 입력 보존 안 됨)
+    with st.form(f"journal_form_{sel_date_str}", clear_on_submit=False):
         st.markdown("### 📝 B. 경제 지표")
         econ = st.text_area(
             "경제 지표 (CPI, 실업수당, 금리 결정 등 — 그날 발표된 것만)",
@@ -817,6 +818,7 @@ if view == "📓 작전 일지":
             height=120,
             placeholder="예시:\n미국 - CPI 실적 2.4% / 예상 2.3% / 이전 2.5%\n한국 - 금리 결정 실적 3.25% / 예상 3.25% / 이전 3.5%\n→ 4년만의 인하, 시장 영향 크지 않을듯",
             label_visibility="collapsed",
+            key=f'journal_econ_{sel_date_str}',
         )
 
         st.markdown("### 🌪️ C. 시장 이슈와 해석")
@@ -826,6 +828,7 @@ if view == "📓 작전 일지":
             height=180,
             placeholder="예시:\n중국 인민은행 경제 부양책 발표\n1. 통화완화 - 기준금리 50bp 인하\n2. 부동산 정책 - 모기지 금리 50bp 인하\n→ 유동성 공급 이후 추가 부양책 고민 필요",
             label_visibility="collapsed",
+            key=f'journal_issue_{sel_date_str}',
         )
 
         st.markdown("### 💸 D. 매매 내역과 이유")
@@ -947,7 +950,7 @@ if view == "📓 작전 일지":
                 '수익률': st.column_config.TextColumn(help="매도 시 실현 수익률 (선택)", width="small"),
                 '이유': st.column_config.TextColumn(width="large"),
             },
-            key="trades_editor",
+            key=f"trades_editor_{sel_date_str}",
         )
 
         st.markdown("### ⚔️ E. 오늘의 전투 일지")
@@ -957,6 +960,7 @@ if view == "📓 작전 일지":
             height=180,
             placeholder="시장 흐름, 내 판단, 잘한 것/실수한 것, 깨달은 것 등 자유 회고",
             label_visibility="collapsed",
+            key=f'journal_log_{sel_date_str}',
         )
 
         st.markdown("### 🎯 F. 내일의 전투 계획")
@@ -966,6 +970,7 @@ if view == "📓 작전 일지":
             height=120,
             placeholder="원칙 / 마음가짐 / 내일 체크할 종목·이벤트 등",
             label_visibility="collapsed",
+            key=f'journal_plan_{sel_date_str}',
         )
 
         submitted = st.form_submit_button("💾 저장", type="primary", use_container_width=True)
