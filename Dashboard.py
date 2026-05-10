@@ -823,7 +823,16 @@ if view == "📓 작전 일지":
             use_container_width=True,
         ):
             st.session_state['_journal_reload_raw'] = True
+            # data_editor 의 session state 강제 초기화 (옛 입력값이 새 데이터를 덮어쓰는 것 방지)
+            _editor_key = f"trades_editor_{sel_date_str}"
+            if _editor_key in st.session_state:
+                del st.session_state[_editor_key]
             st.rerun()
+
+    st.warning(
+        "⚠️ **D 매매내역 표 입력 시 주의**: 셀에 타이핑 후 반드시 **Enter** 또는 **Tab** 키로 commit 한 다음 "
+        "저장 버튼 클릭. 안 그러면 Streamlit form 이 마지막 셀 입력을 못 잡아서 빈 값으로 저장됩니다."
+    )
 
     # ============================================================
     # 섹션 B-F — 폼 (수동 입력)
@@ -1053,7 +1062,6 @@ if view == "📓 작전 일지":
                 settle = str(r.get('정산금액', '')).strip()
                 ratio = str(r.get('그룹비중', '')).strip()
                 reason = str(r.get('이유', '')).strip()
-                # 진짜 완전 빈 행만 스킵 (어느 하나라도 입력 있으면 저장 — 이유만 적어도 보존)
                 if not any([acc, grp, action, name, price, settle, ratio, reason]):
                     continue
                 trades_lines.append(f"{acc}|{grp}|{action}|{name}|{price}|{settle}|{ratio}|{reason}")
@@ -1068,11 +1076,45 @@ if view == "📓 작전 일지":
                     '전투일지': log,
                     '전투계획': plan,
                 })
-                st.cache_data.clear()  # 다음 로드 시 갱신
+                st.cache_data.clear()
+
+                # === 저장 검증: 시트에서 다시 읽어 매매내역 컬럼 실제 반영 확인 ===
+                verify_msg = ""
+                try:
+                    _gc = get_gspread_client()
+                    _ws = _gc.open(SHEET_NAME).worksheet("journal_log")
+                    _all = _ws.get_all_values()
+                    _hdr = _all[0] if _all else []
+                    _trade_idx = _hdr.index('매매내역') if '매매내역' in _hdr else -1
+                    found = False
+                    for _row in _all[1:]:
+                        if _row and _normalize_date_str(_row[0]) == sel_date_str:
+                            found = True
+                            actual = _row[_trade_idx] if _trade_idx >= 0 and len(_row) > _trade_idx else ''
+                            if actual.strip() == trades_text.strip():
+                                verify_msg = f"검증 ✓ 시트의 매매내역 길이 {len(actual)}자"
+                            else:
+                                verify_msg = (
+                                    f"⚠️ 검증 mismatch — 보낸 길이 {len(trades_text)}자 / "
+                                    f"시트 실제 {len(actual)}자"
+                                )
+                            break
+                    if not found:
+                        verify_msg = "⚠️ 검증: 저장 후 해당 날짜 행 못찾음"
+                except Exception as ve:
+                    verify_msg = f"검증 중 오류: {ve}"
+
                 if result == 'updated':
-                    st.success(f"✅ {sel_date_str} 일지 갱신 완료")
+                    st.success(f"✅ {sel_date_str} 일지 갱신 (매매 {len(trades_lines)}건)")
                 else:
-                    st.success(f"✅ {sel_date_str} 일지 신규 저장 완료")
+                    st.success(f"✅ {sel_date_str} 일지 신규 저장 (매매 {len(trades_lines)}건)")
+
+                with st.expander("🔍 저장 진단 (펼쳐 확인)", expanded=("⚠️" in verify_msg)):
+                    st.caption(verify_msg)
+                    st.text("저장 직전 trades_text 미리보기:")
+                    st.code(trades_text[:500] if trades_text else "(빈 문자열)", language="text")
+                    st.text("trades_edited DataFrame:")
+                    st.dataframe(trades_edited, hide_index=True, use_container_width=True)
             except Exception as e:
                 st.error(f"❌ 저장 실패: {e}")
                 import traceback
