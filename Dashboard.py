@@ -192,21 +192,30 @@ def get_yf_batch(yf_tickers_tuple):
         return {}
     results = {}
     try:
-        data = yf.download(yf_tickers, period='2d', interval='1d',
+        data = yf.download(yf_tickers, period='5d', interval='1d',
                            progress=False, auto_adjust=False)
+        if data.empty:
+            return {}
+
+        # 평탄화: single ticker 도 최신 yfinance 는 MultiIndex 컬럼 반환
+        is_multi = isinstance(data.columns, pd.MultiIndex)
+
         for t in yf_tickers:
             try:
-                if len(yf_tickers) == 1:
-                    closes = data['Close'].dropna()
-                else:
+                if is_multi and len(yf_tickers) > 1:
                     closes = data[('Close', t)].dropna()
+                elif is_multi:
+                    # Single ticker 인데 MultiIndex 인 경우 — Close 컬럼 추출
+                    closes = data['Close'].iloc[:, 0].dropna()
+                else:
+                    closes = data['Close'].dropna()
+
                 if len(closes) >= 2:
                     results[t] = {
                         'current': float(closes.iloc[-1]),
                         'prev_close': float(closes.iloc[-2]),
                     }
                 elif len(closes) == 1:
-                    # 어제 데이터만 있고 오늘 데이터 없음
                     results[t] = {
                         'current': float(closes.iloc[-1]),
                         'prev_close': float(closes.iloc[-1]),
@@ -223,12 +232,18 @@ def get_fx_to_krw(currency_code):
     if currency_code == 'KRW':
         return 1.0
     try:
-        rate_data = yf.download(f"{currency_code}KRW=X", period='2d',
+        rate_data = yf.download(f"{currency_code}KRW=X", period='5d',
                                 interval='1d', progress=False, auto_adjust=False)
-        if not rate_data.empty:
-            closes = rate_data['Close'].dropna()
-            if len(closes) > 0:
-                return float(closes.iloc[-1])
+        if rate_data.empty:
+            return None
+        # 최신 yfinance 는 single ticker 도 MultiIndex 로 반환 → 평탄화
+        if isinstance(rate_data.columns, pd.MultiIndex):
+            rate_data.columns = [c[0] for c in rate_data.columns]
+        if 'Close' not in rate_data.columns:
+            return None
+        closes = rate_data['Close'].dropna()
+        if len(closes) > 0:
+            return float(closes.iloc[-1])
     except Exception:
         pass
     return None
