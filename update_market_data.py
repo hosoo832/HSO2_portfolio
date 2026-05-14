@@ -15,7 +15,7 @@ update_market_data.py — GitHub Actions cron 호출용 (KST 매일 07:00)
 import json
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 import gspread
 
@@ -24,6 +24,9 @@ import finance_core
 
 SHEET_NAME = "거래내역"            # config.GOOGLE_SHEET_NAME 과 동일
 WORKSHEET_NAME = "market_data"     # config.SHEET_MARKET_DATA 와 동일
+
+# GitHub Actions runners 은 UTC 라서, 로그에 KST 시각 명시
+KST = timezone(timedelta(hours=9))
 
 
 def get_gspread_client():
@@ -42,7 +45,7 @@ def get_gspread_client():
 
 def main():
     print("=" * 60)
-    print(f"  Market Data Update — {datetime.now().isoformat()}")
+    print(f"  Market Data Update — KST {datetime.now(KST).isoformat()}")
     print("=" * 60)
 
     # 1) 시장 데이터 수집

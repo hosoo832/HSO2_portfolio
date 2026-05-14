@@ -7,7 +7,11 @@ import numpy as np
 from pykrx import stock # [엔진 1]에서 사용
 import yfinance as yf    # [엔진 3, 5]에서 사용
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+
+# KST (Korea Standard Time, UTC+9) — GitHub Actions runners use UTC by default,
+# so we explicitly use KST for any "today" date labels.
+KST = timezone(timedelta(hours=9))
 import requests
 from bs4 import BeautifulSoup
 
@@ -453,8 +457,10 @@ def fetch_daily_market_data():
     
     # 1. 39개 열에 맞는 빈 리스트 초기화 (NIKKEI 2개 추가)
     final_row_data = [""] * 39
-    today = datetime.now()
-    final_row_data[0] = today.strftime('%Y-%m-%d') # Date
+    # ⚠️ KST 기준으로 date label 생성 (GitHub Actions runner 는 UTC 라서
+    #    KST 07:00 cron 실행 시 datetime.now() = 전날 22:00 UTC → 잘못된 날짜)
+    today = datetime.now(KST)
+    final_row_data[0] = today.strftime('%Y-%m-%d') # Date (KST)
 
     # --- [A] yfinance 데이터 수집 (기존 로직 유지) ---
     yf_tickers = [
