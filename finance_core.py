@@ -31,6 +31,73 @@ def get_current_price_naver(ticker):
         print(f"  [API 경고] 네이버 모바일 API 실패 ({ticker}): {e}")
     return None
 
+
+def get_naver_index_previous_close(code='KOSPI'):
+    """
+    Naver 모바일 API 로 KOSPI/KOSDAQ 의 '직전 거래일 종가' 가져옴.
+
+    용도: yfinance 가 한국 인덱스 EOD 데이터를 누락할 때 fallback.
+
+    Args:
+        code: 'KOSPI' 또는 'KOSDAQ'
+
+    Returns:
+        (price, chg_pct, source_date) tuple
+        - price (float): 직전 거래일 종가. 실패 시 None.
+        - chg_pct (float): 그 거래일의 전일대비 %. 장중 호출 시 None.
+        - source_date (str 'YYYY-MM-DD'): 그 종가의 KST 날짜. 실패 시 None.
+
+    동작:
+      - Naver API 의 localTradedAt 이 오늘 KST → closePrice 는 오늘(장중/종가)
+        → prev_close = closePrice − 전일대비_signed
+      - localTradedAt 이 오늘 이전 → closePrice 가 이미 직전 거래일 종가
+        → prev_close = closePrice
+    """
+    try:
+        url = f"https://m.stock.naver.com/api/index/{code}/basic"
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        r = requests.get(url, headers=headers, timeout=10)
+        if r.status_code != 200:
+            print(f"     [Naver] {code} HTTP {r.status_code}")
+            return (None, None, None)
+        data = r.json()
+
+        close_str = str(data.get('closePrice', '0')).replace(',', '')
+        diff_str = str(data.get('compareToPreviousClosePrice', '0')).replace(',', '')
+        direction = data.get('compareToPreviousPrice', {}).get('code', '3')
+        local_traded_at = data.get('localTradedAt', '')
+
+        close_val = float(close_str)
+        diff_val = float(diff_str)
+        # direction: 2 = 상승 / 5 = 하락 / 3 = 보합
+        sign = 1 if direction == '2' else (-1 if direction == '5' else 0)
+        signed_diff = sign * diff_val
+
+        if not local_traded_at:
+            return (None, None, None)
+        try:
+            traded_dt = datetime.fromisoformat(local_traded_at)
+            traded_date = traded_dt.date()
+        except Exception:
+            return (None, None, None)
+
+        today_kst = datetime.now(KST).date()
+
+        if traded_date == today_kst:
+            # closePrice 가 오늘 (장중 또는 종가). 직전 거래일 종가 = closePrice - signed_diff
+            prev_close = close_val - signed_diff
+            # 정확한 직전 거래일은 한국 영업일 캘린더 필요 — 단순화 (어제로 표시)
+            source_date = (today_kst - timedelta(days=1)).strftime('%Y-%m-%d')
+            return (prev_close, None, source_date)
+        else:
+            # closePrice 가 이미 직전 거래일 (장 미개장 시간대)
+            base = close_val - signed_diff
+            chg_pct = (signed_diff / base * 100.0) if base != 0 else 0.0
+            return (close_val, chg_pct, traded_date.strftime('%Y-%m-%d'))
+    except Exception as e:
+        print(f"     [Naver] {code} 예외: {e}")
+        return (None, None, None)
+
 # --- [엔진 1] 거래소 자동 탐지 (v35) ---
 def auto_fill_exchange_info(df_master):
     """
@@ -493,6 +560,49 @@ def fetch_daily_market_data():
         if data.empty:
             print("  [!!!] 필터 후 데이터 없음. 빈 리스트 반환.")
             return []
+
+        # ⚠️ Naver fallback: yfinance 가 한국 인덱스 EOD 누락 시 보충
+        # (Yahoo Finance 의 ^KS11 / ^KQ11 는 가끔 특정 거래일 NaN 으로 옴)
+        try:
+            yesterday_kst = (datetime.now(KST) - timedelta(days=1)).date()
+            yesterday_str = yesterday_kst.strftime('%Y-%m-%d')
+            date_strs = data.index.strftime('%Y-%m-%d')
+
+            if yesterday_str in date_strs.tolist():
+                yesterday_idx = data.index[date_strs == yesterday_str][0]
+                # KOSPI 보충
+                ks_val = data.loc[yesterday_idx, ('Close', '^KS11')] if ('Close', '^KS11') in data.columns else None
+                if ks_val is None or pd.isna(ks_val):
+                    naver_ks, _, _ = get_naver_index_previous_close('KOSPI')
+                    if naver_ks is not None:
+                        data.loc[yesterday_idx, ('Close', '^KS11')] = naver_ks
+                        print(f"     [Naver fallback] KOSPI {yesterday_str} 종가 = {naver_ks:,.2f}")
+                # KOSDAQ 보충
+                kq_val = data.loc[yesterday_idx, ('Close', '^KQ11')] if ('Close', '^KQ11') in data.columns else None
+                if kq_val is None or pd.isna(kq_val):
+                    naver_kq, _, _ = get_naver_index_previous_close('KOSDAQ')
+                    if naver_kq is not None:
+                        data.loc[yesterday_idx, ('Close', '^KQ11')] = naver_kq
+                        print(f"     [Naver fallback] KOSDAQ {yesterday_str} 종가 = {naver_kq:,.2f}")
+            else:
+                # 어제 행 자체가 yfinance 결과에 없음 — 새 행 생성 후 Naver 값 주입
+                naver_ks, _, _ = get_naver_index_previous_close('KOSPI')
+                naver_kq, _, _ = get_naver_index_previous_close('KOSDAQ')
+                if naver_ks is not None or naver_kq is not None:
+                    new_idx = pd.Timestamp(yesterday_str)
+                    new_row = pd.DataFrame(
+                        [[np.nan] * len(data.columns)],
+                        index=[new_idx],
+                        columns=data.columns
+                    )
+                    if naver_ks is not None:
+                        new_row.loc[new_idx, ('Close', '^KS11')] = naver_ks
+                    if naver_kq is not None:
+                        new_row.loc[new_idx, ('Close', '^KQ11')] = naver_kq
+                    data = pd.concat([data, new_row]).sort_index()
+                    print(f"     [Naver fallback] {yesterday_str} 행 신규 생성 + KOSPI/KOSDAQ 주입")
+        except Exception as e:
+            print(f"     [Naver fallback] 보충 중 오류 (무시): {e}")
 
         latest_row = data.iloc[-1]
         
