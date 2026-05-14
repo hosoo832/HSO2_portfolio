@@ -125,37 +125,37 @@ def build_row_for_date(target_date_str):
             df_yf[col] = df_yf_price[tkr]
     df_yf.index = pd.to_datetime(df_yf.index).date
 
-    # --- [1.5] Naver fallback: target_date 가 '직전 거래일' 인 경우만 ---
-    # yfinance 가 한국 인덱스 5/13 처럼 누락하면 Naver 로 보충
-    # (Naver 는 historical 안 줘서 직전 거래일만 가능)
+    # --- [1.5] Naver fallback: target_date == today_kst 일 때만 ---
+    # cron 컨벤션: row labeled X = X 의 직전 거래일 종가 데이터.
+    # → target_date=today 일 때, 우리가 쓰고 싶은 데이터는 yesterday_kst 종가.
+    # Naver 는 'today 시점의 직전 거래일 종가' 만 줘서, 이 경우에만 정확히 매칭.
     try:
         today_kst = datetime.now(KST).date()
-        # 어제 또는 그저께(주말 직후) 까지는 Naver fallback 시도 가능
-        # 보수적으로 target_date 가 7일 이내일 때만 시도 (실수로 옛날 데이터 덮어쓰는 것 방지)
-        if (today_kst - target_date).days <= 1 and (today_kst - target_date).days >= 0:
+        yesterday_kst = today_kst - timedelta(days=1)
+
+        if target_date == today_kst:
             import finance_core  # get_naver_index_previous_close 재사용
             if 'KOSPI_price' in df_yf.columns:
-                ks_val = df_yf.loc[target_date, 'KOSPI_price'] if target_date in df_yf.index else None
+                ks_val = df_yf.loc[yesterday_kst, 'KOSPI_price'] if yesterday_kst in df_yf.index else None
                 if ks_val is None or pd.isna(ks_val):
                     naver_ks, _, naver_date = finance_core.get_naver_index_previous_close('KOSPI')
                     if naver_ks is not None:
-                        if target_date not in df_yf.index:
-                            df_yf.loc[target_date] = pd.NA
-                        df_yf.loc[target_date, 'KOSPI_price'] = naver_ks
-                        print(f"  [Naver fallback] KOSPI {target_date} 종가 = {naver_ks:,.2f} (Naver source: {naver_date})")
+                        if yesterday_kst not in df_yf.index:
+                            df_yf.loc[yesterday_kst] = pd.NA
+                        df_yf.loc[yesterday_kst, 'KOSPI_price'] = naver_ks
+                        print(f"  [Naver fallback] KOSPI {yesterday_kst} 종가 = {naver_ks:,.2f} (Naver source: {naver_date})")
             if 'KOSDAQ_price' in df_yf.columns:
-                kq_val = df_yf.loc[target_date, 'KOSDAQ_price'] if target_date in df_yf.index else None
+                kq_val = df_yf.loc[yesterday_kst, 'KOSDAQ_price'] if yesterday_kst in df_yf.index else None
                 if kq_val is None or pd.isna(kq_val):
                     naver_kq, _, naver_date = finance_core.get_naver_index_previous_close('KOSDAQ')
                     if naver_kq is not None:
-                        if target_date not in df_yf.index:
-                            df_yf.loc[target_date] = pd.NA
-                        df_yf.loc[target_date, 'KOSDAQ_price'] = naver_kq
-                        print(f"  [Naver fallback] KOSDAQ {target_date} 종가 = {naver_kq:,.2f} (Naver source: {naver_date})")
+                        if yesterday_kst not in df_yf.index:
+                            df_yf.loc[yesterday_kst] = pd.NA
+                        df_yf.loc[yesterday_kst, 'KOSDAQ_price'] = naver_kq
+                        print(f"  [Naver fallback] KOSDAQ {yesterday_kst} 종가 = {naver_kq:,.2f} (Naver source: {naver_date})")
             df_yf = df_yf.sort_index()
         else:
-            days_diff = (today_kst - target_date).days
-            print(f"  [Naver fallback] 스킵: target_date 가 오늘 기준 {days_diff}일 차 — Naver 는 직전 거래일만 가능")
+            print(f"  [Naver fallback] 스킵: target_date({target_date}) != today_kst({today_kst}) — Naver 는 'today 의 직전 거래일' 만 제공")
     except Exception as e:
         print(f"  [Naver fallback] 실행 중 오류 (무시, yfinance 데이터만 사용): {e}")
 
@@ -233,14 +233,20 @@ def build_row_for_date(target_date_str):
     # 7) 잔여 NaN 0
     df_final = df_final.fillna(0)
 
-    # target_date 행 추출
+    # ★ cron 컨벤션과 동일하게: row labeled target_date = 직전 거래일 종가 데이터
+    # → target_date 자체 row 가 아니라, target_date 보다 이전의 LATEST row 사용
+    # → date 라벨만 target_date 로 덮어씀
     target_str = target_date.strftime('%Y-%m-%d')
-    target_row_df = df_final[df_final['date'] == target_str]
-    if target_row_df.empty:
-        sys.exit(f"[!] target_date={target_str} 행 생성 실패. 데이터 부족.")
+    prev_data_df = df_final[df_final['date'] < target_str]
+    if prev_data_df.empty:
+        sys.exit(f"[!] target_date={target_str} 이전 데이터 부족. yfinance 윈도우 확장 필요.")
+    source_row = prev_data_df.iloc[-1].copy()
+    actual_data_date = source_row['date']
+    print(f"  [정보] {target_str} 라벨 ← {actual_data_date} 거래일 데이터 사용 (cron 컨벤션)")
+    source_row['date'] = target_str  # 라벨만 target_date 로 덮어씀
 
     # numpy/pandas 타입을 Python native 로 변환 (gspread JSON 직렬화 호환)
-    raw_row = target_row_df.iloc[0].tolist()
+    raw_row = source_row.tolist()
     return [_to_json_safe(v) for v in raw_row]
 
 
