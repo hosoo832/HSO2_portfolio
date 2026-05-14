@@ -473,9 +473,25 @@ def fetch_daily_market_data():
     try:
         # [패치 2 적용 확인] 사용자 코드에 이미 period="5d"가 적용되어 있어 그대로 유지
         data = yf.download(tickers=yf_tickers, period="5d", interval="1d", progress=False)
-        
+
         if data.empty or len(data) < 2:
             print("  [!!!] yfinance 데이터 부족. 빈 리스트 반환.")
+            return []
+
+        # ⚠️ 오늘(KST) 의 intraday 행 제외 — 항상 "전일 종가" 만 사용
+        # (한국 장 열려있는 시간에 수동 실행해도 어제 종가가 들어가도록)
+        try:
+            today_kst_str = datetime.now(KST).strftime('%Y-%m-%d')
+            before = len(data)
+            data = data[data.index.strftime('%Y-%m-%d') < today_kst_str]
+            after = len(data)
+            if before != after:
+                print(f"     [필터] 오늘({today_kst_str}) intraday 행 {before - after}개 제외 → {after}일치 데이터 사용")
+        except Exception as e:
+            print(f"     [경고] 오늘 intraday 필터링 실패 (무시): {e}")
+
+        if data.empty:
+            print("  [!!!] 필터 후 데이터 없음. 빈 리스트 반환.")
             return []
 
         latest_row = data.iloc[-1]

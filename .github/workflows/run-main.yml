@@ -9,6 +9,10 @@ jobs:
   run-main:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    # Node.js 20 deprecation 회피 — actions 가 Node 24 에서 돌도록 강제
+    # (2026-06-02 부터 기본값이 Node 24, 2026-09-16 에 Node 20 제거 예정)
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
 
     steps:
       - name: Check out repository
