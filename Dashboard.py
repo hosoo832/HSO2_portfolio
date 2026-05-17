@@ -2274,12 +2274,23 @@ def make_pie(df, group_col, title, value_col='market_value_krw'):
 # 도넛 차트 "Long 자본 분포" 그릴 때 사용
 # ---------------------------------------------------------
 def _long_weight_for_view(pc, ticker, postion):
-    """pension_class + position → Long weight (0.0~1.0)."""
+    """pension_class + position → Long weight (0.0~1.0).
+
+    방위군 (인버스/VIX) 감지 우선순위:
+      1. ticker.startswith('CASH') → 0
+      2. position/postion == '방위군' (rebalancing_master 분류)
+      3. pension_class in {'헷지', '인버스', 'VIX', '레버리지'} (master_data 분류)
+         ⚠️ dashboard_data 의 position 값이 '방어'/'호구' 등 작전 분류라
+            'postion'/'position' 만 보면 매칭 안 됨 → pension_class 백업 매칭
+    """
     if (ticker or '').startswith('CASH'):
         return 0.0
     if (postion or '').strip() == '방위군':
         return 0.0
     pc = (pc or '').strip()
+    # 방위군 (헷지) — pension_class 기반 (dashboard_data 의 position 체계와 무관하게 감지)
+    if pc in {'헷지', '인버스', 'VIX', '레버리지'}:
+        return 0.0
     # 순수 숫자
     try:
         v = float(pc)
