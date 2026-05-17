@@ -2214,8 +2214,11 @@ st.subheader("🥧 비중")
 def _prep_for_pie(df, group_col, cash_label='현금', hedge_label='헷지', detect_hedge=False):
     """cash row 와 (옵션) hedge row 의 group_col 값을 명확한 라벨로 변경.
     - cash 는 ticker.startswith('CASH') 로 감지 → '현금' 라벨
-    - hedge 는 theme='헷지' / postion='방위군' / military='방위군' 중 하나로 감지 (detect_hedge=True 시)
-      → '헷지' 라벨. 국가별 pie 에서 인버스 ETF 등을 한국/미국 에서 분리해 별도 표시할 때 사용.
+    - hedge 는 **방위군** (postion/position='방위군' OR military='방위군') 만 감지 (detect_hedge=True 시)
+      → '헷지' 라벨.
+      ⚠️ theme='헷지' 는 매칭 안 함 — 채권혼합 ETF 가 theme='헷지' 라서 같이 잡히면
+         rebalancing_master 의 country (G열) 기반 분류와 의미가 어긋남.
+         rebalancing_master 와 동일 의미: 방위군 (인버스/VIX) 만 헷지, 채권혼합은 자기 국가로.
     """
     if group_col not in df.columns or df.empty:
         return df
@@ -2223,13 +2226,14 @@ def _prep_for_pie(df, group_col, cash_label='현금', hedge_label='헷지', dete
     # 1) Cash 라벨링
     mask_cash = df['ticker'].astype(str).str.startswith('CASH')
     df.loc[mask_cash, group_col] = cash_label
-    # 2) Hedge 라벨링 (요청된 경우만)
+    # 2) Hedge 라벨링 (요청된 경우만) — 방위군만
     if detect_hedge:
         mask_hedge = pd.Series(False, index=df.index)
-        if 'theme' in df.columns:
-            mask_hedge |= df['theme'].astype(str).str.strip() == '헷지'
+        # dashboard_data 는 'position' (정상 영문), rebalancing_master 는 'postion' (오타) — 둘 다 매칭
         if 'postion' in df.columns:
             mask_hedge |= df['postion'].astype(str).str.strip() == '방위군'
+        if 'position' in df.columns:
+            mask_hedge |= df['position'].astype(str).str.strip() == '방위군'
         if 'military' in df.columns:
             mask_hedge |= df['military'].astype(str).str.strip() == '방위군'
         # cash 우선 (cash 면 '현금' 유지, hedge 로 덮어쓰지 않음)
