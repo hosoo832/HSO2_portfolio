@@ -1721,24 +1721,33 @@ KPI_MAX_PCT = 20.0
 
 ytd_twr = get_perf_pct('YTD')
 
+# YTD 손익 (KRW) — 월별 손익 합산
+ytd_pl_kpi = sum(
+    (get_perf_raw(f'손익_{m}') or 0)
+    for m in month_cols_kpi if m.startswith(_kpi_year)
+)
+
 if ytd_twr is None:
     st.info("YTD 수익률 데이터 없음")
 else:
-    # 4 메트릭 카드
-    k1, k2, k3, k4 = st.columns(4)
+    # 5 메트릭 카드 (YTD 손익 카드 추가)
+    k1, k2, k3, k4, k5 = st.columns(5)
     with k1:
         st.metric("현재 YTD (TWR)", f"{ytd_twr:+.2f}%")
     with k2:
+        # YTD 손익 (KRW) — 자금흐름 차이 있어서 caveat 는 expander 에서
+        st.metric("YTD 손익", f"₩{ytd_pl_kpi:+,.0f}")
+    with k3:
         diff = ytd_twr - KPI_MIN_PCT
         st.metric("최소 목표 10%", f"{diff:+.2f}p",
                   delta="달성 ✓" if diff >= 0 else "미달성",
                   delta_color="off")
-    with k3:
+    with k4:
         diff = ytd_twr - KPI_AVG_PCT
         st.metric("평균 목표 15%", f"{diff:+.2f}p",
                   delta="달성 ✓" if diff >= 0 else "미달성",
                   delta_color="off")
-    with k4:
+    with k5:
         diff = ytd_twr - KPI_MAX_PCT
         st.metric("최대 목표 20%", f"{diff:+.2f}p",
                   delta="달성 ✓" if diff >= 0 else "미달성",
@@ -1805,11 +1814,7 @@ else:
 
     # ₩ 환산 expander (자금 흐름 caveat 포함)
     with st.expander("📊 ₩ 환산 (대략적 참고)"):
-        # 올해 누적 손익 (월별 합)
-        ytd_pl_kpi = sum(
-            (get_perf_raw(f'손익_{m}') or 0)
-            for m in month_cols_kpi if m.startswith(_kpi_year)
-        )
+        # ytd_pl_kpi 는 위에서 이미 계산됨 (카드 5 에서 사용)
         # 연초 자산 추정 ≈ 현재 자산 - 올해 손익
         estimated_yr_start = total_assets - ytd_pl_kpi
 
@@ -2232,19 +2237,19 @@ def _prep_for_pie(df, group_col, cash_label='현금', hedge_label='헷지', dete
         df.loc[mask_hedge, group_col] = hedge_label
     return df
 
-def make_pie(df, group_col, title):
+def make_pie(df, group_col, title, value_col='market_value_krw'):
     if group_col not in df.columns or df.empty:
         return None
     grouped = (
-        df.groupby(group_col, dropna=False)['market_value_krw']
+        df.groupby(group_col, dropna=False)[value_col]
         .sum()
         .reset_index()
     )
-    grouped = grouped[grouped['market_value_krw'] > 0]
+    grouped = grouped[grouped[value_col] > 0]
     grouped[group_col] = grouped[group_col].astype(str).replace('', '미분류')
     if grouped.empty:
         return None
-    fig = px.pie(grouped, values='market_value_krw', names=group_col, hole=0.5)
+    fig = px.pie(grouped, values=value_col, names=group_col, hole=0.5)
     fig.update_traces(
         textposition='inside',
         textinfo='label+percent',
@@ -2260,20 +2265,86 @@ def make_pie(df, group_col, title):
     )
     return fig
 
-pc1, pc2, pc3 = st.columns(3)
+# ---------------------------------------------------------
+# Long weight helper — main.py 의 _long_weight_from_pc 와 동일 로직
+# 도넛 차트 "Long 자본 분포" 그릴 때 사용
+# ---------------------------------------------------------
+def _long_weight_for_view(pc, ticker, postion):
+    """pension_class + position → Long weight (0.0~1.0)."""
+    if (ticker or '').startswith('CASH'):
+        return 0.0
+    if (postion or '').strip() == '방위군':
+        return 0.0
+    pc = (pc or '').strip()
+    # 순수 숫자
+    try:
+        v = float(pc)
+        if 0 <= v <= 100:
+            return v / 100
+    except (ValueError, TypeError):
+        pass
+    # 라벨+숫자 (예: 채권혼합20)
+    for prefix in ('채권혼합', '혼합'):
+        if pc.startswith(prefix) and len(pc) > len(prefix):
+            rest = pc[len(prefix):].strip()
+            try:
+                v = float(rest)
+                if 0 <= v <= 100:
+                    return v / 100
+            except (ValueError, TypeError):
+                pass
+    if pc in {'안전', '안전자산', '채권', '국채', 'MMF', '현금'}:
+        return 0.0
+    if pc in {'채권혼합', '혼합'}:
+        return 0.3
+    return 1.0  # 위험/빈칸 = 100% Long
+
+# pension_class lookup (master_data 에서)
+_pc_lookup_pie = {}
+if 'df_master' in globals() and not df_master.empty and 'pension_class' in df_master.columns:
+    _pc_lookup_pie = dict(zip(
+        df_master['ticker'].astype(str).str.strip(),
+        df_master['pension_class'].astype(str).str.strip()
+    ))
+
+def _attach_long_mv(df):
+    """df 에 effective_mv 컬럼 추가 (market_value × long_weight). 헷지/현금/안전 자동 제외."""
+    if df.empty or 'market_value_krw' not in df.columns:
+        return df
+    df = df.copy()
+    df['__long_w'] = df.apply(
+        lambda r: _long_weight_for_view(
+            _pc_lookup_pie.get(str(r.get('ticker', '')).strip(), ''),
+            str(r.get('ticker', '')).strip(),
+            str(r.get('postion', '')).strip()
+        ),
+        axis=1
+    )
+    df['effective_mv'] = df['market_value_krw'] * df['__long_w']
+    return df
+
+pc1, pc2, pc3, pc4 = st.columns(4)
 with pc1:
-    # cash row → '현금', 헷지 ETF → '헷지' (theme/postion/military 로 자동 감지)
-    fig = make_pie(_prep_for_pie(df_view, 'country', detect_hedge=True), 'country', '국가별')
+    # 국가별 (NAV 기준) — 기존: 헷지/현금 포함
+    fig = make_pie(_prep_for_pie(df_view, 'country', detect_hedge=True), 'country', '국가별 (NAV)')
     if fig: st.plotly_chart(fig, use_container_width=True)
     else: st.info("국가별 데이터 없음")
 
 with pc2:
+    # 국가별 (Long 기준) — 신규: 헷지/현금/안전 자동 제외 (long_weight=0 이라서)
+    # 채권혼합은 30% 만 반영, 순수 베팅 분포 표시
+    df_view_lw = _attach_long_mv(df_view)
+    fig = make_pie(df_view_lw, 'country', '국가별 (Long)', value_col='effective_mv')
+    if fig: st.plotly_chart(fig, use_container_width=True)
+    else: st.info("국가별 (Long) 데이터 없음")
+
+with pc3:
     fig = make_pie(df_view, 'theme', '테마별')
     if fig: st.plotly_chart(fig, use_container_width=True)
     else: st.info("테마별 데이터 없음")
 
-with pc3:
-    # 군종별: cash row → '현금'. 그룹별 (전체뷰) 는 cash 변환 안 함
+with pc4:
+    # 군종별 또는 그룹별: cash row → '현금'. 그룹별 (전체뷰) 는 cash 변환 안 함
     if third_pie_col == 'group_name':
         fig = make_pie(df_view, third_pie_col, third_pie_title)
     else:
