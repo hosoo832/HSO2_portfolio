@@ -2308,15 +2308,22 @@ if 'df_master' in globals() and not df_master.empty and 'pension_class' in df_ma
     ))
 
 def _attach_long_mv(df):
-    """df 에 effective_mv 컬럼 추가 (market_value × long_weight). 헷지/현금/안전 자동 제외."""
+    """df 에 effective_mv 컬럼 추가 (market_value × long_weight). 헷지/현금/안전 자동 제외.
+
+    ⚠️ dashboard_data 의 컬럼명은 'position' (정상 영문),
+       rebalancing_master 의 컬럼명은 'postion' (오타) — 둘 다 fallback 으로 매칭.
+    """
     if df.empty or 'market_value_krw' not in df.columns:
         return df
     df = df.copy()
+    def _get_postion(r):
+        # 'postion' 우선 (rebalancing_master 호환), 없으면 'position' (dashboard_data)
+        return str(r.get('postion', '') or r.get('position', '')).strip()
     df['__long_w'] = df.apply(
         lambda r: _long_weight_for_view(
             _pc_lookup_pie.get(str(r.get('ticker', '')).strip(), ''),
             str(r.get('ticker', '')).strip(),
-            str(r.get('postion', '')).strip()
+            _get_postion(r)
         ),
         axis=1
     )
