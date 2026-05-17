@@ -443,11 +443,13 @@ def main_run():
                     else:
                         cells_to_update.append(gspread.Cell(sheet_row, 26, ''))
 
-                    # AA(27) Long weight — pension_class + position 기반 (0.0~1.0)
+                    # AA(27) Long weight — pension_class + military 기반 (0.0~1.0)
                     # 시트의 Long/Net 수식이 SUMPRODUCT(H, AA) 로 정확히 계산되도록 적재
+                    # rebalancing_master F열 헤더가 'military' 로 변경됨 (이전 'postion' 오타)
+                    # 'postion' 도 fallback 으로 매칭 (마이그레이션 안전망)
                     _pc_for_long = pension_class_lookup.get(ticker, '')
-                    _postion = str(row.get('postion', '')).strip()
-                    long_weight = _long_weight_from_pc(_pc_for_long, ticker, _postion)
+                    _military = str(row.get('military', '') or row.get('postion', '')).strip()
+                    long_weight = _long_weight_from_pc(_pc_for_long, ticker, _military)
                     cells_to_update.append(gspread.Cell(sheet_row, 27, long_weight))
 
                 # 5.5 [v126/v127] W/X/Y/Z/AA 헤더 자동 작성 (한 번만 — 비어 있을 때)
