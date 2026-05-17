@@ -2226,16 +2226,14 @@ def _prep_for_pie(df, group_col, cash_label='현금', hedge_label='헷지', dete
     # 1) Cash 라벨링
     mask_cash = df['ticker'].astype(str).str.startswith('CASH')
     df.loc[mask_cash, group_col] = cash_label
-    # 2) Hedge 라벨링 (요청된 경우만) — 방위군만
+    # 2) Hedge 라벨링 (요청된 경우만) — 방위군만 (3가지 컬럼 fallback)
     if detect_hedge:
         mask_hedge = pd.Series(False, index=df.index)
-        # dashboard_data 는 'position' (정상 영문), rebalancing_master 는 'postion' (오타) — 둘 다 매칭
-        if 'postion' in df.columns:
-            mask_hedge |= df['postion'].astype(str).str.strip() == '방위군'
-        if 'position' in df.columns:
-            mask_hedge |= df['position'].astype(str).str.strip() == '방위군'
-        if 'military' in df.columns:
-            mask_hedge |= df['military'].astype(str).str.strip() == '방위군'
+        # 'postion' (rebalancing_master, 오타) / 'position' (dashboard_data) /
+        # 'military' (master_data L열 — pension_class 빈칸 안전망) 어느 거든 매칭
+        for col in ('postion', 'position', 'military'):
+            if col in df.columns:
+                mask_hedge |= df[col].astype(str).str.strip() == '방위군'
         # cash 우선 (cash 면 '현금' 유지, hedge 로 덮어쓰지 않음)
         mask_hedge = mask_hedge & ~mask_cash
         df.loc[mask_hedge, group_col] = hedge_label
@@ -2325,20 +2323,26 @@ if 'df_master' in globals() and not df_master.empty and 'pension_class' in df_ma
 def _attach_long_mv(df):
     """df 에 effective_mv 컬럼 추가 (market_value × long_weight). 헷지/현금/안전 자동 제외.
 
-    ⚠️ dashboard_data 의 컬럼명은 'position' (정상 영문),
-       rebalancing_master 의 컬럼명은 'postion' (오타) — 둘 다 fallback 으로 매칭.
+    ⚠️ 방위군 감지 — 3가지 컬럼 fallback 으로 '방위군' 매칭:
+       - 'postion' (rebalancing_master, 오타)
+       - 'position' (dashboard_data)
+       - 'military' (master_data L열 — pension_class 빈칸인 종목의 안전망)
     """
     if df.empty or 'market_value_krw' not in df.columns:
         return df
     df = df.copy()
-    def _get_postion(r):
-        # 'postion' 우선 (rebalancing_master 호환), 없으면 'position' (dashboard_data)
-        return str(r.get('postion', '') or r.get('position', '')).strip()
+    def _get_military(r):
+        # 'postion' / 'position' / 'military' 어느 컬럼이든 '방위군' 매칭
+        for col in ('postion', 'position', 'military'):
+            v = str(r.get(col, '') or '').strip()
+            if v == '방위군':
+                return '방위군'
+        return ''
     df['__long_w'] = df.apply(
         lambda r: _long_weight_for_view(
             _pc_lookup_pie.get(str(r.get('ticker', '')).strip(), ''),
             str(r.get('ticker', '')).strip(),
-            _get_postion(r)
+            _get_military(r)
         ),
         axis=1
     )
