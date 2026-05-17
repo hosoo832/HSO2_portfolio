@@ -310,6 +310,52 @@ def main_run():
                         return 1.0
                     return 1.0  # 빈칸/미인식 = 보수적으로 위험
 
+                def _long_weight_from_pc(pc, ticker, postion):
+                    """pension_class + position → Long weight (0.0~1.0).
+
+                    rebalancing_master AA열 적재용. 시트 수식 SUMPRODUCT 로 Long 자동 계산.
+
+                    규칙:
+                      - CASH/현금 → 0
+                      - 방위군 (인버스/VIX) → 0 (Long 에서 제외; Net 차감은 시트 수식에서)
+                      - 안전 자산 (안전/채권/국채/MMF/현금) → 0
+                      - 채권혼합 → 0.3 (호섭 정책: 30% 만 Long 자산으로 인정)
+                      - 채권혼합20, 혼합15 등 → 라벨 뒤 숫자/100
+                      - 순수 숫자 (예 "15") → 숫자/100
+                      - 그 외 (위험/주식/빈칸/미인식) → 1.0
+                    """
+                    if (ticker or '').startswith('CASH'):
+                        return 0.0
+                    # 방위군 (인버스/VIX) 은 Long 에서 제외
+                    if (postion or '').strip() == '방위군':
+                        return 0.0
+                    pc = (pc or '').strip()
+                    # 순수 숫자
+                    try:
+                        v = float(pc)
+                        if 0 <= v <= 100:
+                            return v / 100
+                    except ValueError:
+                        pass
+                    # 라벨+숫자 (예: 채권혼합20)
+                    for prefix in ('채권혼합', '혼합'):
+                        if pc.startswith(prefix) and len(pc) > len(prefix):
+                            rest = pc[len(prefix):].strip()
+                            try:
+                                v = float(rest)
+                                if 0 <= v <= 100:
+                                    return v / 100
+                            except ValueError:
+                                pass
+                    # 안전 자산
+                    if pc in {'안전', '안전자산', '채권', '국채', 'MMF', '현금'}:
+                        return 0.0
+                    # 채권혼합 라벨 only → 30% (호섭 정책)
+                    if pc in {'채권혼합', '혼합'}:
+                        return 0.3
+                    # 위험/빈칸/미인식 → 100% Long
+                    return 1.0
+
                 # 퇴직연금 계좌별 현재 위험자산 평가액 계산 (CURRENT 기준 — 규제 체크용)
                 # df_dashboard_final 의 모든 보유 종목 순회 (rebalancing_master 에 없는 것도 포함)
                 pension_current_risk_mv = {acc: 0.0 for acc in PENSION_ACCS}
@@ -397,26 +443,34 @@ def main_run():
                     else:
                         cells_to_update.append(gspread.Cell(sheet_row, 26, ''))
 
-                # 5.5 [v126/v127] W/X/Y/Z 헤더 자동 작성 (한 번만 — 비어 있을 때)
+                    # AA(27) Long weight — pension_class + position 기반 (0.0~1.0)
+                    # 시트의 Long/Net 수식이 SUMPRODUCT(H, AA) 로 정확히 계산되도록 적재
+                    _pc_for_long = pension_class_lookup.get(ticker, '')
+                    _postion = str(row.get('postion', '')).strip()
+                    long_weight = _long_weight_from_pc(_pc_for_long, ticker, _postion)
+                    cells_to_update.append(gspread.Cell(sheet_row, 27, long_weight))
+
+                # 5.5 [v126/v127] W/X/Y/Z/AA 헤더 자동 작성 (한 번만 — 비어 있을 때)
                 try:
-                    header_cells = target_sheet_instance.batch_get(['W1:Z1'])
+                    header_cells = target_sheet_instance.batch_get(['W1:AA1'])
                     existing_headers = header_cells[0][0] if header_cells and header_cells[0] else []
                 except Exception:
                     existing_headers = []
-                if not existing_headers or any((c or '').strip() == '' for c in existing_headers + [''] * (4 - len(existing_headers))):
+                if not existing_headers or any((c or '').strip() == '' for c in existing_headers + [''] * (5 - len(existing_headers))):
                     cells_to_update.extend([
                         gspread.Cell(1, 23, '계좌 AUM (%)'),
                         gspread.Cell(1, 24, '계좌 가용현금 (%)'),
                         gspread.Cell(1, 25, '계좌별 target 초과/여유 (%p)'),
                         gspread.Cell(1, 26, '퇴직연금 위험% (현재)'),
+                        gspread.Cell(1, 27, 'Long_weight'),
                     ])
 
                 # 6. 구글 시트로 한 번에 쏘기 (성능 최적화)
                 if cells_to_update:
                     target_sheet_instance.update_cells(cells_to_update)
-                    print("  [MAIN] 구글 시트 I/J/W/X/Y/Z 열 일괄 업데이트 완료! ✅")
+                    print("  [MAIN] 구글 시트 I/J/W/X/Y/Z/AA 열 일괄 업데이트 완료! ✅")
                     print("        (I=Actual_Ratio, J=Drift, W=계좌AUM%, X=계좌가용현금%,")
-                    print("         Y=계좌별 target 초과/여유%p, Z=퇴직연금 위험% (현재))")
+                    print("         Y=계좌별 target 초과/여유%p, Z=퇴직연금 위험%(현재), AA=Long_weight)")
             else:
                 print("  [!] 타겟 시트를 찾을 수 없거나 데이터가 비어있습니다.")
         except Exception as e:
