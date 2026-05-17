@@ -2374,6 +2374,35 @@ with pc4:
     if fig: st.plotly_chart(fig, use_container_width=True)
     else: st.info(f"{third_pie_title} 데이터 없음")
 
+# 디버그용 expander — Long 도넛 정밀 진단 (시트 N 과 차이 추적)
+with st.expander("🔍 Long 도넛 디버그 — 종목별 long_weight + effective_mv"):
+    df_dbg = _attach_long_mv(df_view).copy()
+    df_dbg['pension_class'] = df_dbg['ticker'].astype(str).str.strip().map(_pc_lookup_pie)
+
+    debug_cols = ['ticker', 'name', 'pension_class']
+    if 'country' in df_dbg.columns: debug_cols.append('country')
+    if 'postion' in df_dbg.columns: debug_cols.append('postion')
+    if 'position' in df_dbg.columns: debug_cols.append('position')
+    if 'military' in df_dbg.columns: debug_cols.append('military')
+    debug_cols.extend(['market_value_krw', '__long_w', 'effective_mv'])
+
+    df_dbg_view = df_dbg[debug_cols].sort_values('effective_mv', ascending=False)
+
+    # 국가별 effective_mv 합산 + 비중
+    if 'country' in df_dbg.columns:
+        st.markdown("**🌏 국가별 effective_mv 합산 (Long 도넛 분포):**")
+        summary = df_dbg.groupby('country', dropna=False)['effective_mv'].sum().reset_index()
+        total_long = summary['effective_mv'].sum()
+        if total_long > 0:
+            summary['비중 (%)'] = (summary['effective_mv'] / total_long * 100).round(2)
+        summary = summary.sort_values('effective_mv', ascending=False)
+        st.dataframe(summary, use_container_width=True)
+        st.caption(f"Total Long effective_mv = ₩{total_long:,.0f}")
+
+    st.markdown("**📋 종목별 상세 (effective_mv 큰 순):**")
+    # 보기 편하게 숫자 포맷
+    st.dataframe(df_dbg_view, use_container_width=True, height=500)
+
 st.divider()
 
 # ---------------------------------------------------------
