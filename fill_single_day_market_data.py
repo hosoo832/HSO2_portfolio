@@ -155,31 +155,26 @@ def build_row_for_date(target_date_str):
             if is_holiday:
                 print(f"  [Naver fallback] {yesterday_kst} 는 한국 시장 휴장일로 추정 (Naver 최근 거래일={ks_check_date}) — fallback 스킵")
             else:
+                # ⚠️ Naver 는 price 만 보충 — chg_pct 는 pct_change 자동 계산
+                # (Naver chg_pct 부호 신뢰성 이슈로 사용 안 함 — 5/18, 5/19 사고 사례)
                 if 'KOSPI_price' in df_yf.columns:
                     ks_val = df_yf.loc[yesterday_kst, 'KOSPI_price'] if yesterday_kst in df_yf.index else None
                     if ks_val is None or pd.isna(ks_val):
-                        naver_ks, naver_ks_chg, naver_date = finance_core.get_naver_index_previous_close('KOSPI')
+                        naver_ks, _, naver_date = finance_core.get_naver_index_previous_close('KOSPI')
                         if naver_ks is not None:
                             if yesterday_kst not in df_yf.index:
                                 df_yf.loc[yesterday_kst] = pd.NA
                             df_yf.loc[yesterday_kst, 'KOSPI_price'] = naver_ks
-                            print(f"  [Naver fallback] KOSPI {yesterday_kst} 종가 = {naver_ks:,.2f} (Naver source: {naver_date})")
-                            if naver_ks_chg is not None:
-                                # Naver chg 는 % 단위 (예: 2.63), df_final 의 chg_pct 는 비율 단위 (0.0263)
-                                naver_chg_override['KOSPI_chg_pct'] = naver_ks_chg / 100.0
-                                print(f"  [Naver fallback] KOSPI chg_pct override = {naver_ks_chg:+.2f}%")
+                            print(f"  [Naver fallback] KOSPI {yesterday_kst} 종가 = {naver_ks:,.2f} (Naver source: {naver_date}, chg 는 pct_change 자동)")
                 if 'KOSDAQ_price' in df_yf.columns:
                     kq_val = df_yf.loc[yesterday_kst, 'KOSDAQ_price'] if yesterday_kst in df_yf.index else None
                     if kq_val is None or pd.isna(kq_val):
-                        naver_kq, naver_kq_chg, naver_date = finance_core.get_naver_index_previous_close('KOSDAQ')
+                        naver_kq, _, naver_date = finance_core.get_naver_index_previous_close('KOSDAQ')
                         if naver_kq is not None:
                             if yesterday_kst not in df_yf.index:
                                 df_yf.loc[yesterday_kst] = pd.NA
                             df_yf.loc[yesterday_kst, 'KOSDAQ_price'] = naver_kq
-                            print(f"  [Naver fallback] KOSDAQ {yesterday_kst} 종가 = {naver_kq:,.2f} (Naver source: {naver_date})")
-                            if naver_kq_chg is not None:
-                                naver_chg_override['KOSDAQ_chg_pct'] = naver_kq_chg / 100.0
-                                print(f"  [Naver fallback] KOSDAQ chg_pct override = {naver_kq_chg:+.2f}%")
+                            print(f"  [Naver fallback] KOSDAQ {yesterday_kst} 종가 = {naver_kq:,.2f} (Naver source: {naver_date}, chg 는 pct_change 자동)")
             df_yf = df_yf.sort_index()
         else:
             print(f"  [Naver fallback] 스킵: target_date({target_date}) != today_kst({today_kst}) — Naver 는 'today 의 직전 거래일' 만 제공")

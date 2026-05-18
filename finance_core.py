@@ -581,26 +581,21 @@ def fetch_daily_market_data():
 
             if yesterday_str in date_strs.tolist():
                 yesterday_idx = data.index[date_strs == yesterday_str][0]
-                # KOSPI 보충
+                # KOSPI 보충 — price 만, chg_pct 는 yfinance series 로 자동 계산
+                # (Naver chg_pct 는 부호 신뢰성 이슈로 사용 안 함 — 5/18, 5/19 사고 사례)
                 ks_val = data.loc[yesterday_idx, ('Close', '^KS11')] if ('Close', '^KS11') in data.columns else None
                 if ks_val is None or pd.isna(ks_val):
-                    naver_ks, naver_ks_chg, _ = get_naver_index_previous_close('KOSPI')
+                    naver_ks, _, _ = get_naver_index_previous_close('KOSPI')
                     if naver_ks is not None:
                         data.loc[yesterday_idx, ('Close', '^KS11')] = naver_ks
-                        print(f"     [Naver fallback] KOSPI {yesterday_str} 종가 = {naver_ks:,.2f}")
-                        if naver_ks_chg is not None:
-                            naver_chg_override['^KS11'] = naver_ks_chg
-                            print(f"     [Naver fallback] KOSPI chg_pct override = {naver_ks_chg:+.2f}%")
-                # KOSDAQ 보충
+                        print(f"     [Naver fallback] KOSPI {yesterday_str} 종가 = {naver_ks:,.2f} (chg 는 yfinance 자동 계산)")
+                # KOSDAQ 보충 — 동일
                 kq_val = data.loc[yesterday_idx, ('Close', '^KQ11')] if ('Close', '^KQ11') in data.columns else None
                 if kq_val is None or pd.isna(kq_val):
-                    naver_kq, naver_kq_chg, _ = get_naver_index_previous_close('KOSDAQ')
+                    naver_kq, _, _ = get_naver_index_previous_close('KOSDAQ')
                     if naver_kq is not None:
                         data.loc[yesterday_idx, ('Close', '^KQ11')] = naver_kq
-                        print(f"     [Naver fallback] KOSDAQ {yesterday_str} 종가 = {naver_kq:,.2f}")
-                        if naver_kq_chg is not None:
-                            naver_chg_override['^KQ11'] = naver_kq_chg
-                            print(f"     [Naver fallback] KOSDAQ chg_pct override = {naver_kq_chg:+.2f}%")
+                        print(f"     [Naver fallback] KOSDAQ {yesterday_str} 종가 = {naver_kq:,.2f} (chg 는 yfinance 자동 계산)")
             else:
                 # 어제 행 자체가 yfinance 결과에 없음 — 휴장일 vs yfinance 누락 판별
                 # Naver 응답의 traded_date 가 yesterday_kst 보다 이전이면 휴장일 추정
@@ -624,7 +619,7 @@ def fetch_daily_market_data():
                 if not fallback_ok:
                     print(f"     [Naver fallback] {yesterday_str} 휴장 또는 Naver 비정상 응답 (Naver date={naver_ks_date}) — fallback 스킵")
                 elif naver_ks is not None or naver_kq is not None:
-                    # 휴장 아님 + yfinance 누락 — 새 행 생성
+                    # 휴장 아님 + yfinance 누락 — 새 행 생성 (price 만 주입, chg 는 yfinance 자동 계산)
                     new_idx = pd.Timestamp(yesterday_str)
                     new_row = pd.DataFrame(
                         [[np.nan] * len(data.columns)],
@@ -633,14 +628,10 @@ def fetch_daily_market_data():
                     )
                     if naver_ks is not None:
                         new_row.loc[new_idx, ('Close', '^KS11')] = naver_ks
-                        if naver_ks_chg is not None:
-                            naver_chg_override['^KS11'] = naver_ks_chg
                     if naver_kq is not None:
                         new_row.loc[new_idx, ('Close', '^KQ11')] = naver_kq
-                        if naver_kq_chg is not None:
-                            naver_chg_override['^KQ11'] = naver_kq_chg
                     data = pd.concat([data, new_row]).sort_index()
-                    print(f"     [Naver fallback] {yesterday_str} 행 신규 생성 + KOSPI/KOSDAQ 주입")
+                    print(f"     [Naver fallback] {yesterday_str} 행 신규 생성 + KOSPI/KOSDAQ price 주입 (chg 는 yfinance 자동)")
         except Exception as e:
             print(f"     [Naver fallback] 보충 중 오류 (무시): {e}")
 
