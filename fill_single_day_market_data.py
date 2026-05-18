@@ -219,16 +219,19 @@ def build_row_for_date(target_date_str):
         df_final.loc[target_date] = pd.NA
         df_final = df_final.sort_index()
 
-    # 1) 등락률 (원본 NaN 유지하며 계산)
+    # 1) 등락률 — 가격 ffill 후 pct_change (휴장일 NaN 행이 다음 거래일 chg 망가뜨리는 거 방지)
+    # ⚠️ 5/19 사고: yfinance 가 5/16,5/17 (토/일) NaN 줘서 5/18 chg 가 NaN → ffill 로 5/15 의 chg 복사됨
+    # fix: 가격을 먼저 ffill 한 시리즈로 pct_change 계산 (휴장일은 chg=0% 으로 자연스럽게)
     for col_base in ['KOSPI', 'KOSDAQ', 'SP500', 'NASDAQ', 'SHANGHAI', 'NIKKEI', 'DAX',
                      'USDKRW', 'USD_IDX', 'WTI', 'GOLD', 'BTC', 'VIX']:
         price_col = f'{col_base}_price'
         if price_col in df_final.columns:
-            df_final[f'{col_base}_chg_pct'] = df_final[price_col].pct_change(fill_method=None)
+            _ffilled = df_final[price_col].ffill()
+            df_final[f'{col_base}_chg_pct'] = _ffilled.pct_change(fill_method=None)
     if 'US_10Y_Bond_rate' in df_final.columns:
-        df_final['US_10Y_Bond_chg_bps'] = df_final['US_10Y_Bond_rate'].diff() * 100
+        df_final['US_10Y_Bond_chg_bps'] = df_final['US_10Y_Bond_rate'].ffill().diff() * 100
     if 'US_30Y_Bond_rate' in df_final.columns:
-        df_final['US_30Y_Bond_chg_bps'] = df_final['US_30Y_Bond_rate'].diff() * 100
+        df_final['US_30Y_Bond_chg_bps'] = df_final['US_30Y_Bond_rate'].ffill().diff() * 100
 
     # 2) 가격 ffill (휴장일 처리)
     cols_to_ffill = [c for c in PRICE_COLS if c in df_final.columns]

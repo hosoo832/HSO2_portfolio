@@ -356,7 +356,13 @@ Naver 모바일 API 가 가끔 direction code 잘못 줘서 chg 부호 반대로
 - 특히 헷지 (인버스/VIX) 는 `헷지` 명시 — 빈칸이면 도넛에 한국/미국 그룹으로 잘못 끼어듦
 - Dashboard 코드는 `military='방위군'` fallback 으로 안전망 있음 (덕분에 530130 같은 사례 잡힘)
 
-### 13. GitHub Actions schedule cron 의 5분~1시간 지연
+### 13. `fill_single_day_market_data.py` 의 pct_change + ffill 함정 (5/19 사고)
+fill 스크립트의 pct_change 가 휴장일 NaN 행 만나면 그 다음 거래일 chg 도 NaN → ffill 로 이전 chg 가 복사됨.
+- 예: 5/19 row 의 KOSPI chg 가 5/18 의 chg 가 아니라 5/15 의 chg (-6.12%) 가 들어감
+- **fix (2026-05-19)**: pct_change 전에 가격 ffill 적용. `_ffilled = df_final[price_col].ffill(); chg = _ffilled.pct_change()`
+- cron 의 `finance_core.get_val()` 은 `dropna().iloc[-1]/[-2]` 방식이라 NaN 무관하게 정확 (fill 스크립트와 다른 로직).
+
+### 14. GitHub Actions schedule cron 의 5분~1시간 지연
 GitHub free tier 의 known limitation. KST 07:00 정밀 트리거 위해 외부 cron 서비스 사용 중.
 - **cron-job.org** → GitHub workflow_dispatch API 호출 (~1분 정확도)
 - daily-market.yml 의 `schedule:` 블록 제거됨 (외부 cron 만 사용)
