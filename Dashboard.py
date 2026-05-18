@@ -655,8 +655,8 @@ if view == "📓 작전 일지":
                 unsafe_allow_html=True
             )
 
-        # ─ 국내
-        _section_header("🇰🇷 국내")
+        # ─ 한국
+        _section_header("🇰🇷 한국")
         _render(st.columns(3), [
             ('KOSPI', 'KOSPI_price', 'KOSPI_chg_pct'),
             ('KOSDAQ', 'KOSDAQ_price', 'KOSDAQ_chg_pct'),
@@ -2598,7 +2598,7 @@ with st.expander("ℹ️ 계산 방식 보기"):
 **값의 출처**: `rebalancing_master` 시트의 `국가별 Gross` 컬럼 (K/L 열).
 
 **개념**: 포트폴리오 내 자산이 **어느 국가 시장**에 얼마나 노출되어 있는지.
-- **국내** = 한국 시장 (KOSPI/KOSDAQ 종목)
+- **한국** = 한국 시장 (KOSPI/KOSDAQ 종목)
 - **중국** = 중국 본토/홍콩 종목
 - **미국** = 미국 시장 종목
 - **헷지** = 인버스 ETF / VIX / 채권 등 시장 하락 베팅 자산
@@ -2644,7 +2644,7 @@ def get_country_total_weighted(country_label, metric_col):
     return (mentor_aum * mv + hs_aum * hv) / total_aum
 
 # 4 country 로 표시 — 시트의 Country 라벨과 일치해야 함
-COUNTRIES = ['국내', '중국', '미국', '헷지']
+COUNTRIES = ['한국', '중국', '미국', '헷지']
 TARGET_COL = '국가별 Gross (목표)'
 CURRENT_COL = '국가별 Gross (현재)'
 
