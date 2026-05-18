@@ -87,7 +87,7 @@ PENSION_ACCS = ['220914426167', '717190227129']  # HS 포폴 안의 퇴직연금
 |---|---|---|
 | `raw_domestic` | 계좌번호, 거래일자, 거래종류, 적요명, 종목코드, 종목명, 거래수량, 정산금액 | 증권사에서 export 한 거래내역 붙여넣기 |
 | `raw_international` | 계좌번호, 거래일자, 적요명, 종목코드, 종목명, 거래수량, 정산금액(외), 통화 | 해외 거래 |
-| `master_data` | ticker, name, **theme**, **pension_class**, postion, country, exchange, asset_class, currency, ... | 종목 마스터. 사용자가 수동 관리 |
+| `master_data` | ticker, name, **theme**, **pension_class**, postion (오타, 작전분류 공격/방어), maket_phase, exchange, currency, country, **military** (군분류 방위군/공군/육군/해군/특수군) | 종목 마스터. 사용자가 수동 관리 |
 
 ### main.py 가 생성/갱신하는 시트
 | 시트 | 갱신 시점 | 설명 |

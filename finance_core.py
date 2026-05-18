@@ -607,18 +607,22 @@ def fetch_daily_market_data():
                 naver_ks, naver_ks_chg, naver_ks_date = get_naver_index_previous_close('KOSPI')
                 naver_kq, naver_kq_chg, naver_kq_date = get_naver_index_previous_close('KOSDAQ')
 
-                # 휴장일 판별 (KOSPI Naver 결과 기준 — 한국 시장 휴장이면 둘 다 휴장)
-                is_holiday = False
+                # ⚠️ Naver fallback 활성화 조건 (엄격):
+                # Naver traded_date 가 yesterday_kst 와 *정확히 일치* 할 때만 fallback.
+                # - 어제가 거래일이고 yfinance만 누락한 케이스만 보충 (예: 5/13 KOSPI 누락)
+                # - 어제가 휴장 (토/일/공휴일) 이거나 Naver 가 비정상 timestamp 줄 때 → 스킵
+                #   → 잘못된 chg_pct override 로 chg 망가지는 사고 방지 (5/18 +6.97% 사례)
+                fallback_ok = False
                 if naver_ks_date:
                     try:
                         naver_date_obj = datetime.strptime(naver_ks_date, '%Y-%m-%d').date()
-                        if naver_date_obj < yesterday_kst:
-                            is_holiday = True
+                        if naver_date_obj == yesterday_kst:
+                            fallback_ok = True
                     except Exception:
                         pass
 
-                if is_holiday:
-                    print(f"     [Naver fallback] {yesterday_str} 는 한국 시장 휴장일로 추정 (Naver 최근 거래일={naver_ks_date}) — fallback 스킵")
+                if not fallback_ok:
+                    print(f"     [Naver fallback] {yesterday_str} 휴장 또는 Naver 비정상 응답 (Naver date={naver_ks_date}) — fallback 스킵")
                 elif naver_ks is not None or naver_kq is not None:
                     # 휴장 아님 + yfinance 누락 — 새 행 생성
                     new_idx = pd.Timestamp(yesterday_str)
