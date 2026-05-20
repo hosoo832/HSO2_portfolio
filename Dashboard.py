@@ -2349,7 +2349,88 @@ def _attach_long_mv(df):
     df['effective_mv'] = df['market_value_krw'] * df['__long_w']
     return df
 
-pc1, pc2, pc3, pc4 = st.columns(4)
+# ---------------------------------------------------------
+# Net 도넛 helper — 헷지를 "대상 국가" 에서 음수(−)로 차감
+# 멘토 강의 기준: 인버스 = 그 시장을 헷지 → 해당 국가에서 차감
+# 호섭 정책 (2026-05-21):
+#   - 대상국: 코스닥/코스피 인버스 → 한국, 나스닥/S&P/VIX → 미국
+#   - 차감배수: VIX 류 = ×3 (변동성 레버리지), 그 외 일반 인덱스 인버스 = ×1
+#   예) KODEX인버스 → 한국×1 / KODEX코스닥150선물인버스 → 한국×1
+#       KODEX미국나스닥100선물인버스(H) → 미국×1 / 삼성S&P500VIX선물ETN → 미국×3
+# ---------------------------------------------------------
+# 국가 매핑 대상이 아닌 헷지 (원자재 인버스 등) — 추론에서 제외
+_HEDGE_EXCLUDE_KW = ('은선물', '골드', '금선물', 'GOLD', '원유', 'WTI',
+                     '실버', 'SILVER', '천연가스', '구리')
+# 대상국 추론 키워드 (위에서부터 먼저 매칭 — 미국 먼저)
+_HEDGE_COUNTRY_RULES = [
+    ('미국', ('VIX', 'S&P', 'SP500', '나스닥', 'NASDAQ', '미국')),
+    ('한국', ('코스닥', '코스피', 'KOSPI', 'KOSDAQ', 'K200', '인버스')),
+]
+# ×3 차감 키워드 — VIX 류 변동성 헷지. 그 외 인덱스 인버스는 ×1
+_HEDGE_X3_KW = ('VIX',)
+
+def _hedge_target(name):
+    """헷지 종목명 → (대상국가, 차감배수). 매칭 실패 시 None.
+    ⚠️ 종목명 키워드 추론 — 새 헷지 추가 시 키워드 안 맞으면 누락될 수 있음.
+       Long 도넛 디버그 expander 에서 분류 결과 확인 가능.
+    """
+    n = (name or '').upper().replace(' ', '')
+    if any(k.upper() in n for k in _HEDGE_EXCLUDE_KW):
+        return None
+    country = None
+    for c, keywords in _HEDGE_COUNTRY_RULES:
+        if any(k.upper() in n for k in keywords):
+            country = c
+            break
+    if country is None:
+        return None
+    mult = 3.0 if any(k.upper() in n for k in _HEDGE_X3_KW) else 1.0
+    return (country, mult)
+
+def _is_hedge_row(r):
+    """방위군/헷지 종목 판정 — _attach_long_mv 의 long_weight=0 헷지와 동일 기준."""
+    ticker = str(r.get('ticker', '') or '').strip()
+    if ticker.startswith('CASH'):
+        return False
+    for col in ('postion', 'position', 'military'):
+        if str(r.get(col, '') or '').strip() == '방위군':
+            return True
+    pc = (_pc_lookup_pie.get(ticker, '') or '').strip()
+    if pc in {'헷지', '인버스', 'VIX', '레버리지'}:
+        return True
+    return False
+
+def _attach_net_mv(df):
+    """국가별 Net 도넛용. df 에 __net_country / __net_mv 컬럼 추가.
+    - 일반 종목: __net_mv = effective_mv (long-weighted), __net_country = country
+    - 헷지 종목: __net_mv = −(market_value × 배수), __net_country = 추론된 대상국
+                 (종목명 추론 실패 시 __net_mv=0 으로 제외)
+    """
+    if df.empty or 'market_value_krw' not in df.columns:
+        return df
+    df = _attach_long_mv(df).copy()  # effective_mv, __long_w 확보
+    net_country, net_mv = [], []
+    for _, r in df.iterrows():
+        if _is_hedge_row(r):
+            tgt = _hedge_target(r.get('name', ''))
+            if tgt:
+                country, mult = tgt
+                mv = abs(float(r.get('market_value_krw', 0) or 0))
+                net_country.append(country)
+                net_mv.append(-mv * mult)
+                continue
+            # 국가 매핑 실패한 헷지 → Net 도넛에서 제외 (0)
+            net_country.append(str(r.get('country', '') or ''))
+            net_mv.append(0.0)
+            continue
+        # 일반 종목 — long-weighted 값 그대로
+        net_country.append(str(r.get('country', '') or ''))
+        net_mv.append(float(r.get('effective_mv', 0) or 0))
+    df['__net_country'] = net_country
+    df['__net_mv'] = net_mv
+    return df
+
+pc1, pc2, pc3, pc4, pc5 = st.columns(5)
 with pc1:
     # 국가별 (NAV 기준) — 기존: 헷지/현금 포함
     fig = make_pie(_prep_for_pie(df_view, 'country', detect_hedge=True), 'country', '국가별 (NAV)')
@@ -2377,6 +2458,19 @@ with pc4:
         fig = make_pie(_prep_for_pie(df_view, third_pie_col), third_pie_col, third_pie_title)
     if fig: st.plotly_chart(fig, use_container_width=True)
     else: st.info(f"{third_pie_title} 데이터 없음")
+
+with pc5:
+    # 국가별 (Net) — Long 에서 헷지를 대상국 음수 차감
+    # 대상국: 코스닥/코스피→한국, 나스닥/S&P/VIX→미국 · 배수: VIX류 ×3, 그 외 ×1
+    df_view_net = _attach_net_mv(df_view)
+    fig = make_pie(df_view_net, '__net_country', '국가별 (Net)', value_col='__net_mv')
+    if fig: st.plotly_chart(fig, use_container_width=True)
+    else: st.info("국가별 (Net) 데이터 없음")
+
+st.caption(
+    "💡 **국가별 (Long)** = 헷지 제외(0) 한 순수 베팅 분포 · "
+    "**국가별 (Net)** = 헷지를 대상국에서 음수 차감 (VIX류 −3배, 그 외 인덱스 인버스 −1배)"
+)
 
 # 디버그용 expander — Long 도넛 정밀 진단 (시트 N 과 차이 추적)
 with st.expander("🔍 Long 도넛 디버그 — 종목별 long_weight + effective_mv"):
@@ -2406,6 +2500,33 @@ with st.expander("🔍 Long 도넛 디버그 — 종목별 long_weight + effecti
     st.markdown("**📋 종목별 상세 (effective_mv 큰 순):**")
     # 보기 편하게 숫자 포맷
     st.dataframe(df_dbg_view, use_container_width=True, height=500)
+
+    # ----- Net 도넛 검증: 헷지 종목 → 국가 추론 결과 -----
+    st.markdown("---")
+    st.markdown("**🛡️ 헷지 종목 → 국가 추론 검증 (Net 도넛):**")
+    df_net_dbg = _attach_net_mv(df_view)
+    if not df_net_dbg.empty:
+        hedge_mask = df_net_dbg.apply(_is_hedge_row, axis=1)
+        hedge_rows = df_net_dbg[hedge_mask]
+        if not hedge_rows.empty:
+            hv = hedge_rows[['ticker', 'name', 'market_value_krw',
+                             '__net_country', '__net_mv']].copy()
+            hv = hv.rename(columns={'__net_country': '추론 대상국',
+                                    '__net_mv': '차감액(−)'})
+            st.dataframe(hv, use_container_width=True)
+            st.caption("⚠️ '추론 대상국' 이 비었거나 틀리면 종목명 키워드 매칭 실패 "
+                       "→ 차감액 0 (Net 도넛에서 누락). 알려주시면 키워드 추가할게요.")
+        else:
+            st.info("헷지 종목 없음")
+        # 국가별 Net 합산
+        net_sum = (df_net_dbg.groupby('__net_country', dropna=False)['__net_mv']
+                   .sum().reset_index())
+        net_pos = net_sum[net_sum['__net_mv'] > 0]['__net_mv'].sum()
+        if net_pos > 0:
+            net_sum['비중 (%)'] = (net_sum['__net_mv'] / net_pos * 100).round(2)
+        st.markdown("**🌏 국가별 Net 합산 (Net 도넛 분포):**")
+        st.dataframe(net_sum.sort_values('__net_mv', ascending=False),
+                     use_container_width=True)
 
 st.divider()
 
