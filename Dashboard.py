@@ -1032,9 +1032,9 @@ if view == "📓 작전 일지":
             key=f"trades_editor_{sel_date_str}",
         )
 
-        st.markdown("### ⚔️ E. 오늘의 전투 일지")
+        st.markdown("### ⚔️ E. 어제의 전투 일지")
         log = st.text_area(
-            "오늘의 전투 일지",
+            "어제의 전투 일지",
             value=existing.get('전투일지', ''),
             height=180,
             placeholder="시장 흐름, 내 판단, 잘한 것/실수한 것, 깨달은 것 등 자유 회고",
@@ -1042,12 +1042,12 @@ if view == "📓 작전 일지":
             key=f'journal_log_{sel_date_str}',
         )
 
-        st.markdown("### 🎯 F. 내일의 전투 계획")
+        st.markdown("### 🎯 F. 오늘의 전투 계획")
         plan = st.text_area(
-            "내일의 전투 계획",
+            "오늘의 전투 계획",
             value=existing.get('전투계획', ''),
             height=120,
-            placeholder="원칙 / 마음가짐 / 내일 체크할 종목·이벤트 등",
+            placeholder="원칙 / 마음가짐 / 오늘 체크할 종목·이벤트 등",
             label_visibility="collapsed",
             key=f'journal_plan_{sel_date_str}',
         )
