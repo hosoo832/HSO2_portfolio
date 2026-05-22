@@ -254,18 +254,8 @@ def main_run():
                 mentor_acc_cash = df_mentor[_is_cash_m].groupby('account')['market_value_krw'].sum().to_dict()
                 hs_acc_cash = df_hs[_is_cash_h].groupby('account')['market_value_krw'].sum().to_dict()
 
-                # 4.6 [v126 신규] 계좌별 target_ratio 합 (Y 컬럼 over/under 계산용)
-                # df_target 의 H 열을 사전 한 번 파싱
-                def _parse_pct(s):
-                    try:
-                        return float(str(s).replace('%', '').strip()) / 100.0
-                    except:
-                        return 0.0
-                acc_target_sum = {}
-                for _, _row in df_target.iterrows():
-                    _acc = str(_row.get('account', '')).strip()
-                    if _acc:
-                        acc_target_sum[_acc] = acc_target_sum.get(_acc, 0.0) + _parse_pct(_row.get('target_ratio', '0'))
+                # 4.6 [구 v126] 계좌별 target_ratio 합 사전계산 — 제거됨.
+                #   Y 열을 시트 LIVE 수식(=SUMIF(H)-W)으로 적재하면서 불필요해짐.
 
                 # 4.7 [v127 신규] 퇴직연금 위험비중 사전 계산 (Z 열 — target 기준)
                 # master_data 의 pension_class 룩업
@@ -381,6 +371,7 @@ def main_run():
                         pension_current_risk_pct[_acc] = 0.0
 
                 cells_to_update = []
+                formula_cells = []  # Y열 LIVE 수식 (USER_ENTERED 로 따로 적재)
 
                 # 5. 각 행(종목)별 비중 순회 및 계산
                 for idx, row in df_target.iterrows():
@@ -423,18 +414,23 @@ def main_run():
                     #         + 양수: target 합이 계좌 capacity 초과 → 빼야 함
                     #         - 음수: target 합이 계좌 capacity 미달 → 더 채울 수 있음
                     #         0: 정확히 일치
+                    #   ※ Y 는 고정값이 아니라 시트 LIVE 수식(=SUMIF(H)-W)으로 적재한다.
+                    #      → H열만 수정해도 main.py 안 돌리고 초과/여유가 즉시 반영됨.
+                    #        (W 는 실제 보유 기준이라 H 와 무관 → main.py 가 갱신)
                     acc_aum_ratio  = float((acc_aum / total_mv) if total_mv > 0 else 0.0)
                     acc_cash_ratio = float((acc_cash / total_mv) if total_mv > 0 else 0.0)
-                    target_sum_acc = acc_target_sum.get(acc, 0.0)
-                    over_under = float(target_sum_acc - acc_aum_ratio)
 
                     # I열(9), J열(10)에 순수 숫자(Float) 값 적재
                     cells_to_update.append(gspread.Cell(sheet_row, 9, actual_ratio))
                     cells_to_update.append(gspread.Cell(sheet_row, 10, drift))
-                    # W(23), X(24), Y(25) 열 — 모두 decimal 형태 (시트에서 % 서식 적용 시 자동 환산)
+                    # W(23), X(24) 열 — decimal 형태 (시트에서 % 서식 적용 시 자동 환산)
                     cells_to_update.append(gspread.Cell(sheet_row, 23, acc_aum_ratio))
                     cells_to_update.append(gspread.Cell(sheet_row, 24, acc_cash_ratio))
-                    cells_to_update.append(gspread.Cell(sheet_row, 25, over_under))
+                    # Y(25) 열 — LIVE 수식: (그 계좌 종목들의 H 합) − (계좌 AUM%)
+                    formula_cells.append(gspread.Cell(
+                        sheet_row, 25,
+                        f'=SUMIF($B:$B,$B{sheet_row},$H:$H)-W{sheet_row}'
+                    ))
 
                     # Z(26) 퇴직연금 위험% (현재 시점 — 규제 체크용)
                     # 동일 계좌 내 모든 행에 같은 값. 비퇴직연금은 빈칸.
@@ -470,9 +466,15 @@ def main_run():
                 # 6. 구글 시트로 한 번에 쏘기 (성능 최적화)
                 if cells_to_update:
                     target_sheet_instance.update_cells(cells_to_update)
-                    print("  [MAIN] 구글 시트 I/J/W/X/Y/Z/AA 열 일괄 업데이트 완료! ✅")
+                    print("  [MAIN] 구글 시트 I/J/W/X/Z/AA 열 일괄 업데이트 완료! ✅")
                     print("        (I=Actual_Ratio, J=Drift, W=계좌AUM%, X=계좌가용현금%,")
-                    print("         Y=계좌별 target 초과/여유%p, Z=퇴직연금 위험%(현재), AA=Long_weight)")
+                    print("         Z=퇴직연금 위험%(현재), AA=Long_weight)")
+                # Y(25) 열 — LIVE 수식 (=SUMIF(H)-W). USER_ENTERED 로 따로 적재해야
+                # 수식으로 인식됨 (RAW 로 넣으면 '=...' 텍스트로 들어가버림).
+                # W 값이 먼저 들어가 있어야 수식이 바로 평가되므로 위 update 다음에 실행.
+                if formula_cells:
+                    target_sheet_instance.update_cells(formula_cells, value_input_option='USER_ENTERED')
+                    print("  [MAIN] Y열(초과/여유) LIVE 수식 적재 완료 — H열만 수정해도 즉시 반영 ✅")
             else:
                 print("  [!] 타겟 시트를 찾을 수 없거나 데이터가 비어있습니다.")
         except Exception as e:
