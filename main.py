@@ -459,11 +459,14 @@ def main_run():
                     #   → H열만 수정해도 main.py 안 돌리고 위험비중 즉시 갱신.
                     #   한국 퇴직연금 규제: 이 값이 70% 넘으면 안 됨.
                     #   비퇴직연금 행은 빈칸 (Z열과 동일 정책).
+                    #   ※ SUMPRODUCT 는 쉼표(,) 형태로 작성 — H 범위에 텍스트(중복 헤더 등)가
+                    #     섞여 있어도 0 으로 처리돼 #VALUE! 안 남. (* 곱하기형은 텍스트에서 터짐)
+                    #     조건 배열은 --() 로 TRUE/FALSE → 1/0 강제 변환.
                     if acc in PENSION_ACCS:
                         formula_cells.append(gspread.Cell(
                             sheet_row, 28,
                             f'=IF(W{sheet_row}=0,"",'
-                            f'SUMPRODUCT(($B$2:$B$1000=$B{sheet_row})*$H$2:$H$1000*$AC$2:$AC$1000)'
+                            f'SUMPRODUCT(--($B$2:$B$1000=$B{sheet_row}),$H$2:$H$1000,$AC$2:$AC$1000)'
                             f'/W{sheet_row})'
                         ))
                     else:
