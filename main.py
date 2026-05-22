@@ -448,33 +448,56 @@ def main_run():
                     long_weight = _long_weight_from_pc(_pc_for_long, ticker, _military)
                     cells_to_update.append(gspread.Cell(sheet_row, 27, long_weight))
 
-                # 5.5 [v126/v127] W/X/Y/Z/AA 헤더 자동 작성 (한 번만 — 비어 있을 때)
+                    # AC(29) risk_weight — 퇴직연금 위험비중 가중치 (_risk_ratio_from_pc 재사용)
+                    #   헷지/인버스/VIX = 1.0 (한국 규정상 위험 100%), 안전/채권혼합 = 0.0 등.
+                    #   AB열 '퇴직연금 타겟 위험%' 수식이 SUMPRODUCT(H, AC) 로 쓰는 헬퍼 컬럼.
+                    risk_weight = _risk_ratio_from_pc(_pc_for_long, ticker)
+                    cells_to_update.append(gspread.Cell(sheet_row, 29, risk_weight))
+
+                    # AB(28) 퇴직연금 타겟 위험% — 퇴직연금 계좌 행만, LIVE 수식
+                    #   = SUMPRODUCT(그 계좌 H × risk_weight) / 계좌 AUM%
+                    #   → H열만 수정해도 main.py 안 돌리고 위험비중 즉시 갱신.
+                    #   한국 퇴직연금 규제: 이 값이 70% 넘으면 안 됨.
+                    #   비퇴직연금 행은 빈칸 (Z열과 동일 정책).
+                    if acc in PENSION_ACCS:
+                        formula_cells.append(gspread.Cell(
+                            sheet_row, 28,
+                            f'=IF(W{sheet_row}=0,"",'
+                            f'SUMPRODUCT(($B$2:$B$1000=$B{sheet_row})*$H$2:$H$1000*$AC$2:$AC$1000)'
+                            f'/W{sheet_row})'
+                        ))
+                    else:
+                        cells_to_update.append(gspread.Cell(sheet_row, 28, ''))
+
+                # 5.5 [v126/v127] W~AC 헤더 자동 작성 (한 번만 — 비어 있을 때)
                 try:
-                    header_cells = target_sheet_instance.batch_get(['W1:AA1'])
+                    header_cells = target_sheet_instance.batch_get(['W1:AC1'])
                     existing_headers = header_cells[0][0] if header_cells and header_cells[0] else []
                 except Exception:
                     existing_headers = []
-                if not existing_headers or any((c or '').strip() == '' for c in existing_headers + [''] * (5 - len(existing_headers))):
+                if not existing_headers or any((c or '').strip() == '' for c in existing_headers + [''] * (7 - len(existing_headers))):
                     cells_to_update.extend([
                         gspread.Cell(1, 23, '계좌 AUM (%)'),
                         gspread.Cell(1, 24, '계좌 가용현금 (%)'),
                         gspread.Cell(1, 25, '계좌별 target 초과/여유 (%p)'),
                         gspread.Cell(1, 26, '퇴직연금 위험% (현재)'),
                         gspread.Cell(1, 27, 'Long_weight'),
+                        gspread.Cell(1, 28, '퇴직연금 타겟 위험%'),
+                        gspread.Cell(1, 29, 'risk_weight'),
                     ])
 
                 # 6. 구글 시트로 한 번에 쏘기 (성능 최적화)
                 if cells_to_update:
                     target_sheet_instance.update_cells(cells_to_update)
-                    print("  [MAIN] 구글 시트 I/J/W/X/Z/AA 열 일괄 업데이트 완료! ✅")
+                    print("  [MAIN] 구글 시트 I/J/W/X/Z/AA/AC 열 일괄 업데이트 완료! ✅")
                     print("        (I=Actual_Ratio, J=Drift, W=계좌AUM%, X=계좌가용현금%,")
-                    print("         Z=퇴직연금 위험%(현재), AA=Long_weight)")
-                # Y(25) 열 — LIVE 수식 (=SUMIF(H)-W). USER_ENTERED 로 따로 적재해야
+                    print("         Z=퇴직연금 위험%(현재), AA=Long_weight, AC=risk_weight)")
+                # Y(25)/AB(28) 열 — LIVE 수식. USER_ENTERED 로 따로 적재해야
                 # 수식으로 인식됨 (RAW 로 넣으면 '=...' 텍스트로 들어가버림).
-                # W 값이 먼저 들어가 있어야 수식이 바로 평가되므로 위 update 다음에 실행.
+                # W/AC 값이 먼저 들어가 있어야 수식이 바로 평가되므로 위 update 다음에 실행.
                 if formula_cells:
                     target_sheet_instance.update_cells(formula_cells, value_input_option='USER_ENTERED')
-                    print("  [MAIN] Y열(초과/여유) LIVE 수식 적재 완료 — H열만 수정해도 즉시 반영 ✅")
+                    print("  [MAIN] Y열(초과/여유)·AB열(퇴직연금 타겟 위험%) LIVE 수식 적재 완료 ✅")
             else:
                 print("  [!] 타겟 시트를 찾을 수 없거나 데이터가 비어있습니다.")
         except Exception as e:
