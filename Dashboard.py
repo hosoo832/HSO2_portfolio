@@ -2430,6 +2430,55 @@ def _attach_net_mv(df):
     df['__net_mv'] = net_mv
     return df
 
+def make_net_bar(df, title):
+    """국가별 Net 세로 막대그래프 — 헷지 차감 후 순노출 (Long 총액 대비 %).
+
+    도넛 대비 장점:
+      - 음수(순매도) 국가도 0선 아래 빨간 막대로 표시 → 미국 같은 케이스 안 사라짐
+      - 분모가 Long 총액 고정 → 도넛처럼 100% 재정규화 안 됨 (착시 제거).
+        Long 도넛과 같은 분모라 한국 59.9%(Long) vs 57%대(Net) 직접 비교 가능
+    """
+    if (df.empty or '__net_country' not in df.columns
+            or '__net_mv' not in df.columns or 'effective_mv' not in df.columns):
+        return None
+    long_tot = float(df['effective_mv'].sum())
+    if long_tot <= 0:
+        return None
+    g = (df.groupby('__net_country', dropna=False)['__net_mv']
+         .sum().reset_index())
+    g['__net_country'] = g['__net_country'].astype(str).str.strip()
+    g = g[g['__net_country'] != '']
+    # 0 근처 잡음 (현금/통합 등 net≈0) 제거
+    g = g[g['__net_mv'].abs() > long_tot * 0.001]
+    if g.empty:
+        return None
+    g['pct'] = g['__net_mv'] / long_tot * 100
+    g = g.sort_values('pct', ascending=False)
+    colors = ['#e74c3c' if v < 0 else '#1f77b4' for v in g['pct']]
+    fig = go.Figure(go.Bar(
+        x=g['__net_country'],
+        y=g['pct'],
+        marker_color=colors,
+        text=[f"{v:+.1f}%" for v in g['pct']],
+        textposition='outside',
+        cliponaxis=False,
+    ))
+    _ymax = max(float(g['pct'].max()), 0.0)
+    _ymin = min(float(g['pct'].min()), 0.0)
+    _pad = max((_ymax - _ymin) * 0.18, 5.0)
+    fig.update_layout(
+        title=dict(text=title, font=dict(size=18)),
+        height=340,
+        margin=dict(l=10, r=10, t=50, b=10),
+        font=dict(size=14, family='sans-serif'),
+        showlegend=False,
+        yaxis=dict(title='Long 총액 대비 %',
+                   range=[_ymin - _pad, _ymax + _pad],
+                   zeroline=True, zerolinewidth=2, zerolinecolor='#888888'),
+        xaxis=dict(title=None),
+    )
+    return fig
+
 pc1, pc2, pc3, pc4, pc5 = st.columns(5)
 with pc1:
     # 국가별 (NAV 기준) — 기존: 헷지/현금 포함
@@ -2446,22 +2495,12 @@ with pc2:
     else: st.info("국가별 (Long) 데이터 없음")
 
 with pc3:
-    # 국가별 (Net) — Long 바로 오른편. Long 에서 헷지를 대상국 음수 차감
-    # 대상국: 코스닥/코스피→한국, 나스닥/S&P/VIX→미국 · 배수: VIX류 ×3, 그 외 ×1
+    # 국가별 (Net) — Long 바로 오른편. 헷지 차감 후 순노출.
+    # 세로 막대그래프: 도넛과 달리 음수(순매도) 국가도 0선 아래 막대로 표시.
     df_view_net = _attach_net_mv(df_view)
-    fig = make_pie(df_view_net, '__net_country', '국가별 (Net)', value_col='__net_mv')
+    fig = make_net_bar(df_view_net, '국가별 (Net)')
     if fig: st.plotly_chart(fig, use_container_width=True)
     else: st.info("국가별 (Net) 데이터 없음")
-    # 순매도(net short) 국가 표기 — 도넛은 음수 슬라이스를 못 그려서 빠짐.
-    # 미국처럼 헷지(특히 VIX×3)가 Long 보다 크면 Net 이 음수 → 도넛에서 사라짐.
-    if not df_view_net.empty and '__net_country' in df_view_net.columns:
-        _net_by_c = df_view_net.groupby('__net_country', dropna=False)['__net_mv'].sum()
-        _long_tot = df_view_net['effective_mv'].sum()
-        _shorts = [(str(c).strip(), v) for c, v in _net_by_c.items()
-                   if v <= 0 and str(c).strip()]
-        if _shorts and _long_tot > 0:
-            _msg = ", ".join(f"{c} {v / _long_tot * 100:+.1f}%" for c, v in _shorts)
-            st.caption(f"⚠️ 순매도 (헷지>Long, 도넛 제외): {_msg}　※ Long 총액 대비 %")
 
 with pc4:
     fig = make_pie(df_view, 'theme', '테마별')
@@ -2480,8 +2519,8 @@ with pc5:
 st.caption(
     "💡 **국가별 (Long)** = 헷지 제외(0) 한 순수 베팅 분포 · "
     "**국가별 (Net)** = 헷지를 대상국에서 음수 차감 (VIX류 −3배, 그 외 인덱스 인버스 −1배)  \n"
-    "ℹ️ Net 도넛 %는 순매수(net long) 국가끼리의 **상대 비중** — 순매도 국가가 빠지면 "
-    "분모가 줄어 남은 국가 %가 커집니다 (절대 노출은 디버그 expander 의 '국가별 Net 합산' 참고)."
+    "ℹ️ Net 막대는 **Long 총액 대비 %** — Long 도넛과 같은 분모라 직접 비교 가능 "
+    "(도넛처럼 100% 재정규화 안 함). 순매도(헷지>Long) 국가는 0선 아래 빨간 막대."
 )
 
 # 디버그용 expander — Long 도넛 정밀 진단 (시트 N 과 차이 추적)
