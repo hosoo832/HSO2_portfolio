@@ -2446,11 +2446,29 @@ with pc2:
     else: st.info("국가별 (Long) 데이터 없음")
 
 with pc3:
+    # 국가별 (Net) — Long 바로 오른편. Long 에서 헷지를 대상국 음수 차감
+    # 대상국: 코스닥/코스피→한국, 나스닥/S&P/VIX→미국 · 배수: VIX류 ×3, 그 외 ×1
+    df_view_net = _attach_net_mv(df_view)
+    fig = make_pie(df_view_net, '__net_country', '국가별 (Net)', value_col='__net_mv')
+    if fig: st.plotly_chart(fig, use_container_width=True)
+    else: st.info("국가별 (Net) 데이터 없음")
+    # 순매도(net short) 국가 표기 — 도넛은 음수 슬라이스를 못 그려서 빠짐.
+    # 미국처럼 헷지(특히 VIX×3)가 Long 보다 크면 Net 이 음수 → 도넛에서 사라짐.
+    if not df_view_net.empty and '__net_country' in df_view_net.columns:
+        _net_by_c = df_view_net.groupby('__net_country', dropna=False)['__net_mv'].sum()
+        _long_tot = df_view_net['effective_mv'].sum()
+        _shorts = [(str(c).strip(), v) for c, v in _net_by_c.items()
+                   if v <= 0 and str(c).strip()]
+        if _shorts and _long_tot > 0:
+            _msg = ", ".join(f"{c} {v / _long_tot * 100:+.1f}%" for c, v in _shorts)
+            st.caption(f"⚠️ 순매도 (헷지>Long, 도넛 제외): {_msg}　※ Long 총액 대비 %")
+
+with pc4:
     fig = make_pie(df_view, 'theme', '테마별')
     if fig: st.plotly_chart(fig, use_container_width=True)
     else: st.info("테마별 데이터 없음")
 
-with pc4:
+with pc5:
     # 군종별 또는 그룹별: cash row → '현금'. 그룹별 (전체뷰) 는 cash 변환 안 함
     if third_pie_col == 'group_name':
         fig = make_pie(df_view, third_pie_col, third_pie_title)
@@ -2459,17 +2477,11 @@ with pc4:
     if fig: st.plotly_chart(fig, use_container_width=True)
     else: st.info(f"{third_pie_title} 데이터 없음")
 
-with pc5:
-    # 국가별 (Net) — Long 에서 헷지를 대상국 음수 차감
-    # 대상국: 코스닥/코스피→한국, 나스닥/S&P/VIX→미국 · 배수: VIX류 ×3, 그 외 ×1
-    df_view_net = _attach_net_mv(df_view)
-    fig = make_pie(df_view_net, '__net_country', '국가별 (Net)', value_col='__net_mv')
-    if fig: st.plotly_chart(fig, use_container_width=True)
-    else: st.info("국가별 (Net) 데이터 없음")
-
 st.caption(
     "💡 **국가별 (Long)** = 헷지 제외(0) 한 순수 베팅 분포 · "
-    "**국가별 (Net)** = 헷지를 대상국에서 음수 차감 (VIX류 −3배, 그 외 인덱스 인버스 −1배)"
+    "**국가별 (Net)** = 헷지를 대상국에서 음수 차감 (VIX류 −3배, 그 외 인덱스 인버스 −1배)  \n"
+    "ℹ️ Net 도넛 %는 순매수(net long) 국가끼리의 **상대 비중** — 순매도 국가가 빠지면 "
+    "분모가 줄어 남은 국가 %가 커집니다 (절대 노출은 디버그 expander 의 '국가별 Net 합산' 참고)."
 )
 
 # 디버그용 expander — Long 도넛 정밀 진단 (시트 N 과 차이 추적)
