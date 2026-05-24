@@ -472,27 +472,41 @@ def main_run():
                     else:
                         cells_to_update.append(gspread.Cell(sheet_row, 28, ''))
 
-                # 5.5 [v126/v127] W~AC 헤더 자동 작성 (한 번만 — 비어 있을 때)
-                try:
-                    header_cells = target_sheet_instance.batch_get(['W1:AC1'])
-                    existing_headers = header_cells[0][0] if header_cells and header_cells[0] else []
-                except Exception:
-                    existing_headers = []
-                if not existing_headers or any((c or '').strip() == '' for c in existing_headers + [''] * (7 - len(existing_headers))):
-                    cells_to_update.extend([
-                        gspread.Cell(1, 23, '계좌 AUM (%)'),
-                        gspread.Cell(1, 24, '계좌 가용현금 (%)'),
-                        gspread.Cell(1, 25, '계좌별 target 초과/여유 (%p)'),
-                        gspread.Cell(1, 26, '퇴직연금 위험% (현재)'),
-                        gspread.Cell(1, 27, 'Long_weight'),
-                        gspread.Cell(1, 28, '퇴직연금 타겟 위험%'),
-                        gspread.Cell(1, 29, 'risk_weight'),
-                    ])
+                    # AD(30) 🎯 타겟 조정 여력 — 모든 계좌 행, LIVE 수식
+                    #   이 종목 H 를 얼마나 더 올려도 되는지 한마디로 판정.
+                    #   - 위험 종목(AC>0) + 퇴직연금 → 격벽(Y)·위험한도(AB) 둘 중 빡빡한 값
+                    #   - 안전 종목 / 비퇴직연금          → 격벽(Y)만
+                    #   → 사용자가 Y/AB 직접 안 보고 이 열만 보면 됨.
+                    #   yr=계좌공간여유, rk=위험종목?, ps=퇴직연금?, ar=위험한도여유(H환산),
+                    #   cp=최종여력, bd=초과 시 어느 한도가 막혔나.
+                    formula_cells.append(gspread.Cell(
+                        sheet_row, 30,
+                        f'=IFERROR(IF($C{sheet_row}="","",'
+                        f'LET(yr,-$Y{sheet_row},rk,N($AC{sheet_row})>0,ps,$AB{sheet_row}<>"",'
+                        f'ar,IF(ps,(0.7-$AB{sheet_row})*$W{sheet_row},9),'
+                        f'cp,IF(AND(rk,ps),MIN(yr,ar),yr),'
+                        f'bd,IF(AND(rk,ps,ar<yr),"위험한도","격벽"),'
+                        f'IF(cp>0.0005,"🟢 +"&TEXT(cp,"0.0%"),'
+                        f'IF(cp>=-0.0005,"🟡 꽉 참",'
+                        f'"🔴 "&bd&" 초과 → 줄여")))),"—")'
+                    ))
+
+                # 5.5 W~AD 헤더 자동 작성 (매 실행 항상 — 이름 최신화)
+                cells_to_update.extend([
+                    gspread.Cell(1, 23, '계좌 AUM (%)'),
+                    gspread.Cell(1, 24, '계좌 가용현금 (%)'),
+                    gspread.Cell(1, 25, '계좌 공간 (%p · +면 초과)'),
+                    gspread.Cell(1, 26, '퇴직연금 위험% 현재'),
+                    gspread.Cell(1, 27, 'Long_weight'),
+                    gspread.Cell(1, 28, '퇴직연금 타겟 위험% (≤70%)'),
+                    gspread.Cell(1, 29, 'risk_weight'),
+                    gspread.Cell(1, 30, '🎯 타겟 조정 여력'),
+                ])
 
                 # 6. 구글 시트로 한 번에 쏘기 (성능 최적화)
                 if cells_to_update:
                     target_sheet_instance.update_cells(cells_to_update)
-                    print("  [MAIN] 구글 시트 I/J/W/X/Z/AA/AC 열 일괄 업데이트 완료! ✅")
+                    print("  [MAIN] 구글 시트 I/J/W/X/Z/AA/AC + 헤더 일괄 업데이트 완료! ✅")
                     print("        (I=Actual_Ratio, J=Drift, W=계좌AUM%, X=계좌가용현금%,")
                     print("         Z=퇴직연금 위험%(현재), AA=Long_weight, AC=risk_weight)")
                 # Y(25)/AB(28) 열 — LIVE 수식. USER_ENTERED 로 따로 적재해야
@@ -500,7 +514,7 @@ def main_run():
                 # W/AC 값이 먼저 들어가 있어야 수식이 바로 평가되므로 위 update 다음에 실행.
                 if formula_cells:
                     target_sheet_instance.update_cells(formula_cells, value_input_option='USER_ENTERED')
-                    print("  [MAIN] Y열(초과/여유)·AB열(퇴직연금 타겟 위험%) LIVE 수식 적재 완료 ✅")
+                    print("  [MAIN] Y(계좌공간)·AB(퇴직연금 타겟위험%)·AD(타겟 조정 여력) LIVE 수식 적재 완료 ✅")
             else:
                 print("  [!] 타겟 시트를 찾을 수 없거나 데이터가 비어있습니다.")
         except Exception as e:
