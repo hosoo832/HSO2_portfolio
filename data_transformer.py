@@ -465,3 +465,55 @@ def audit_chey_vs_domestic(df_domestic, df_chey, lag_days=4):
             print("  [Audit] → raw_체결 누락 또는 수기입력 오타 가능. 확인 권장.")
     except Exception as e:
         print(f"  [Audit] 감사 중 오류(무시하고 진행): {e}")
+
+
+# --- [평탄화] 키움 체결내역 raw(2줄/건) → raw_체결 스키마(1줄/건) ---
+def flatten_kiwoom_chey(rows):
+    """raw_체결_키움 시트의 get_all_values() (A열=계좌번호, B열~=키움 raw export)를
+    1줄/건 으로 평탄화. 헤더행 자동 스킵, (계좌·체결일·종목·매매구분) 단위 통합.
+    정산금액은 빈칸으로 둠 → transform_chey 가 거래대금+수수료로 계산."""
+    out_cols = ['계좌번호', '체결일', '종목코드', '종목명', '매매구분',
+                '체결수량', '체결평균단가', '정산금액']
+    if not rows:
+        return pd.DataFrame(columns=out_cols)
+
+    def cell(rw, idx):
+        return str(rw[idx]).strip() if rw is not None and len(rw) > idx else ''
+
+    recs = []
+    i, n = 0, len(rows)
+    while i < n:
+        if cell(rows[i], 1) == '주식' and i + 1 < n:   # 주문정보행
+            o, e = rows[i], rows[i + 1]
+            acc = cell(o, 0) or cell(e, 0)
+            code = cell(o, 4)                       # 종목번호
+            otype = cell(o, 6)                      # 주문유형구분 (현금매수/매도)
+            date = cell(e, 1)                       # 주문일자
+            name = cell(e, 2)                       # 종목명
+            qty = cell(e, 5).replace(',', '')       # 체결수량
+            price = cell(e, 6).replace(',', '')     # 체결평균단가
+            side = '매도' if '매도' in otype else ('매수' if '매수' in otype else '')
+            if acc and date and qty and side:
+                recs.append({'계좌번호': acc, '체결일': date, '종목코드': code,
+                             '종목명': name, '매매구분': side,
+                             '체결수량': qty, '체결평균단가': price})
+            i += 2
+        else:
+            i += 1   # 헤더행/빈행 스킵
+
+    if not recs:
+        print("  [Flatten] raw_체결_키움: 변환된 매매 없음.")
+        return pd.DataFrame(columns=out_cols)
+
+    df = pd.DataFrame(recs)
+    df['_q'] = pd.to_numeric(df['체결수량'], errors='coerce')
+    df['_p'] = pd.to_numeric(df['체결평균단가'], errors='coerce')
+    df['_amt'] = df['_q'] * df['_p']
+    g = df.groupby(['계좌번호', '체결일', '종목코드', '매매구분'], dropna=False, sort=False)
+    con = g.agg(종목명=('종목명', 'first'), 체결수량=('_q', 'sum'),
+                _amt=('_amt', 'sum')).reset_index()
+    con['체결평균단가'] = (con['_amt'] / con['체결수량']).replace(
+        [np.inf, -np.inf], np.nan).round(2)
+    con['정산금액'] = ''
+    print(f"  [Flatten] raw_체결_키움: 원본 {len(df)}건 → 통합 {len(con)}건")
+    return con[out_cols]

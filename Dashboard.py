@@ -36,6 +36,7 @@ import plotly.graph_objects as go
 import requests
 import streamlit as st
 import yfinance as yf
+import data_transformer
 
 # ---------------------------------------------------------
 # 설정
@@ -875,13 +876,26 @@ if view == "📓 작전 일지":
                           ['market_value_krw'].apply(pd.to_numeric, errors='coerce').sum()),
         }
 
+        # raw_체결(정리본) + raw_체결_키움(키움 raw 평탄화) 합본
+        def _load_chey_all():
+            df = load_sheet("raw_체결")
+            try:
+                gc = get_gspread_client()
+                raw = gc.open(SHEET_NAME).worksheet("raw_체결_키움").get_all_values()
+                flat = data_transformer.flatten_kiwoom_chey(raw)
+                if not flat.empty:
+                    df = pd.concat([df, flat], ignore_index=True)
+            except Exception:
+                pass
+            return df
+
         # raw 시트에서 해당 날짜 매매 자동 import 헬퍼
         def _fetch_trades_for_date(date_str):
             """raw_체결(국내 시장매매) + raw_domestic(재투자 등) + raw_international 에서 매매 추출."""
             rows = []
             # 국내 시장매매 — raw_체결 (체결일 기준)
             try:
-                df_chey = load_sheet("raw_체결")
+                df_chey = _load_chey_all()
                 if not df_chey.empty and '체결일' in df_chey.columns:
                     df_chey = df_chey.copy()
                     df_chey['_date_iso'] = pd.to_datetime(
@@ -990,7 +1004,7 @@ if view == "📓 작전 일지":
         def _prev_business_day(date_str):
             """date_str 직전의 가장 최근 체결일(영업일) 반환. raw_체결 기준. 없으면 date_str."""
             try:
-                df_c = load_sheet("raw_체결")
+                df_c = _load_chey_all()
                 if df_c.empty or '체결일' not in df_c.columns:
                     return date_str
                 dts = pd.to_datetime(df_c['체결일'], errors='coerce').dropna()

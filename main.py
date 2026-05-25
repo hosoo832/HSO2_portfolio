@@ -52,6 +52,11 @@ def main_run():
         print("\n--- [MAIN] STEP 1: 원본 데이터 4개 읽기 시작 ---")
         df_domestic, _ = google_api.get_all_records_as_text(config.SHEET_RAW_DOMESTIC)
         df_chey, _ = google_api.get_all_records_as_text(config.SHEET_RAW_CHEY)   # [신규] 국내 시장매매
+        # 키움 체결내역 raw(2줄/건) → 평탄화해서 raw_체결 에 합침
+        _kiwoom_raw = google_api.get_raw_values(config.SHEET_RAW_CHEY_KIWOOM)
+        _df_kiwoom = data_transformer.flatten_kiwoom_chey(_kiwoom_raw)
+        if not _df_kiwoom.empty:
+            df_chey = pd.concat([df_chey, _df_kiwoom], ignore_index=True)
         df_intl, _ = google_api.get_all_records_as_text(config.SHEET_RAW_INTL)
         df_master, master_sheet_instance = google_api.get_all_records_as_text(config.SHEET_MASTER_DATA)
         

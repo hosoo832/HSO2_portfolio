@@ -76,6 +76,20 @@ def get_all_records_as_text(sheet_name):
     # 'get_all_records_as_text'는 원본 시트 인스턴스도 함께 반환 (v35 auto_fill_exchange_info 용도)
     return df, worksheet
 
+# --- [함수] 시트 원본 값 그대로 읽기 (헤더 감지 없음) ---
+def get_raw_values(sheet_name):
+    """시트의 모든 셀을 가공 없이 list-of-lists 로 반환. 시트 없으면 빈 리스트."""
+    try:
+        ws = sheet_file.worksheet(sheet_name)
+        return ws.get_all_values()
+    except gspread.exceptions.WorksheetNotFound:
+        print(f"  [Reader] '{sheet_name}' 시트 없음 — 빈 목록 반환.")
+        return []
+    except Exception as e:
+        print(f"  [!] '{sheet_name}' 원본 읽기 오류: {e}")
+        return []
+
+
 # --- 3. [함수] 구글 시트에 업로드 (서식 지정) ---
 # (원본 v47 로직과 동일)
 def upload_to_google_sheet(df_to_upload, sheet_name):
