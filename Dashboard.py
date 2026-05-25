@@ -819,7 +819,7 @@ if view == "📓 작전 일지":
     with btn_col:
         if st.button(
             "📥 raw 시트에서 매매 다시 불러오기",
-            help="이 날짜의 raw_domestic + raw_international 매매를 가져와 D 섹션에 채움 (현재 입력 덮어씀)",
+            help="이 날짜의 raw_체결 + raw_domestic + raw_international 매매를 가져와 D 섹션에 채움 (현재 입력 덮어씀)",
             use_container_width=True,
         ):
             st.session_state['_journal_reload_raw'] = True
@@ -877,9 +877,43 @@ if view == "📓 작전 일지":
 
         # raw 시트에서 해당 날짜 매매 자동 import 헬퍼
         def _fetch_trades_for_date(date_str):
-            """raw_domestic + raw_international 에서 매매 거래만 추출."""
+            """raw_체결(국내 시장매매) + raw_domestic(재투자 등) + raw_international 에서 매매 추출."""
             rows = []
-            # 국내
+            # 국내 시장매매 — raw_체결 (체결일 기준)
+            try:
+                df_chey = load_sheet("raw_체결")
+                if not df_chey.empty and '체결일' in df_chey.columns:
+                    df_chey = df_chey.copy()
+                    df_chey['_date_iso'] = pd.to_datetime(
+                        df_chey['체결일'], errors='coerce'
+                    ).dt.strftime('%Y-%m-%d')
+                    today_chey = df_chey[df_chey['_date_iso'] == date_str]
+                    for _, r in today_chey.iterrows():
+                        action = '매도' if '매도' in str(r.get('매매구분', '')) else '매수'
+                        acc = clean_account(r.get('계좌번호', ''))
+                        grp = _account_to_group(acc)
+                        name = str(r.get('종목명', '')).strip()
+                        qty = str(r.get('체결수량', '')).strip().replace(',', '')
+                        prc = str(r.get('체결평균단가', '')).strip().replace(',', '')
+                        amt = str(r.get('정산금액', '')).strip().replace(',', '')
+                        try:
+                            qf = float(qty) if qty else 0
+                            pf = float(prc) if prc else 0
+                            af = float(amt) if amt else qf * pf   # 정산금액 비면 거래대금
+                            price_str = f"₩{int(pf):,}" if pf > 0 else ''
+                            settle_str = f"₩{int(af):,}" if af > 0 else ''
+                            grp_aum = _group_aum.get(grp, 0)
+                            ratio_str = f"{(af / grp_aum * 100):.2f}%" if grp_aum > 0 and af > 0 else ''
+                        except Exception:
+                            price_str = ''; settle_str = ''; ratio_str = ''
+                        rows.append({
+                            '계좌': acc, '그룹': grp, '매매': action, '종목명': name,
+                            '가격': price_str, '정산금액': settle_str,
+                            '그룹비중': ratio_str, '이유': '',
+                        })
+            except Exception:
+                pass
+            # 국내 재투자 등 (보통매매 매수/매도는 raw_체결 담당) — raw_domestic
             try:
                 df_dom = load_sheet("raw_domestic")
                 if not df_dom.empty and '거래일자' in df_dom.columns:
@@ -890,7 +924,7 @@ if view == "📓 작전 일지":
                     today_dom = df_dom[df_dom['_date_iso'] == date_str]
                     for _, r in today_dom.iterrows():
                         search = str(r.get('거래종류', '')) + ' ' + str(r.get('적요명', ''))
-                        if not ('보통매매' in search or '재투자' in search):
+                        if '재투자' not in search:
                             continue
                         action = '매도' if '매도' in search else '매수'
                         acc = clean_account(r.get('계좌번호', ''))
@@ -903,7 +937,6 @@ if view == "📓 작전 일지":
                             price = af / qf if qf > 0 else 0
                             price_str = f"₩{int(price):,}" if price > 0 else amt
                             settle_str = f"₩{int(af):,}" if af > 0 else amt
-                            # 그룹 비중 (KRW 거래 → 그대로 비교)
                             grp_aum = _group_aum.get(grp, 0)
                             ratio_str = f"{(af / grp_aum * 100):.2f}%" if grp_aum > 0 and af > 0 else ''
                         except Exception:
