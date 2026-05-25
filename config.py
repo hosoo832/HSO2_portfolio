@@ -26,6 +26,7 @@ SHEET_RAW_DOMESTIC = 'raw_domestic'
 SHEET_RAW_INTL = 'raw_international'
 SHEET_MASTER_DATA = 'master_data'
 SHEET_REBALANCING_MASTER = 'rebalancing_master'
+SHEET_RAW_CHEY = 'raw_체결'   # [신규] 국내 시장매매(체결내역) 입력 시트
 
 # [시트 이름 설정 (Output)]
 # 2. 스크립트가 계산 결과를 '업로드'할 시트 3개의 이름

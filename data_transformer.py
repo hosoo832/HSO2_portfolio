@@ -7,6 +7,21 @@ from datetime import datetime, timedelta
 
 print("\n[Transformer] 데이터 변환 모듈(v109 - Split Logic Added)을 불러왔습니다.")
 
+# === [raw_체결 도입] 상수 및 헬퍼 ============================================
+# raw_체결 매매의 수수료/세금 추정율 — 정산금액이 '빈칸'인 미래 체결분에만 적용.
+# 과거 마이그레이션분은 거래내역의 정확한 정산금액을 그대로 쓰므로 영향 없음.
+CHEY_COMMISSION_RATE = 0.00015   # 매매수수료 추정 (키움 기준 ~0.015%) — 정확값 알면 수정
+CHEY_TAX_RATE = 0.0015           # 증권거래세 (매도 시에만, 2025~ 0.15%)
+
+
+def is_market_domestic_trade(거래종류):
+    """raw_domestic 의 '보통매매' 매수/매도(장외 OTC 제외) 여부.
+    → 이 행들은 raw_체결 에서 처리하므로 transform_domestic 에서 제외 대상.
+    재투자/무상주입고/액면분할 등은 '보통매매'가 아니므로 자동으로 False."""
+    t = str(거래종류)
+    return ('보통매매' in t) and ('OTC' not in t)
+# =============================================================================
+
 # --- [헬퍼 함수 1] 국내 거래내역 '번역' (v128 - 거래종류+적요명 쌍끌이 검사) ---
 def classify_domestic_action(row):
     """[v128] 적요명까지 포함하여 퇴직연금 수수료, 재투자, 부담금 완벽 추적"""
@@ -63,18 +78,27 @@ def classify_domestic_action(row):
     return 'Other', search_text, None, search_text
 
 # --- [함수 정의 1] 국내 거래내역 변환 (인덱스 에러 완벽 패치) ---
-def transform_domestic(df):
-    """'정산금액'/'거래수량' 필터링 시 인덱스 어긋남 방지 적용"""
+def transform_domestic(df, exclude_market_trades=True):
+    """'정산금액'/'거래수량' 필터링 시 인덱스 어긋남 방지 적용.
+    exclude_market_trades=True : 보통매매 매수/매도 제외(raw_체결 담당). main.py 기본값.
+                          False : 모든 거래 포함(구버전 동작). backfill/검증용."""
     print("  [Transform] 국내 거래내역 변환 (총계정원장 방식 v66)...")
-    
+
     if df.empty:
         print("  [Transform] 국내 거래내역 원본이 비어있습니다."); return pd.DataFrame()
 
-    df = df.replace('', np.nan) 
+    df = df.replace('', np.nan)
     df = df.dropna(subset=['계좌번호', '거래종류', '거래일자'], how='any')
-        
+
     df = df.dropna(subset=['정산금액', '거래수량'], how='all').copy()
-    
+
+    # [raw_체결 도입] 보통매매 매수/매도는 raw_체결 에서 처리 → 여기선 제외
+    if exclude_market_trades and '거래종류' in df.columns:
+        _mkt = df['거래종류'].astype(str).apply(is_market_domestic_trade)
+        if _mkt.any():
+            print(f"  [Transform] 보통매매 매수/매도 {int(_mkt.sum())}건 제외 → raw_체결 담당")
+            df = df[~_mkt].copy()
+
     df_transformed = pd.DataFrame(index=df.index)
     df_transformed['account'] = df['계좌번호'].astype(str)
     df_transformed['date'] = pd.to_datetime(df['거래일자'], errors='coerce') 
@@ -330,3 +354,114 @@ def transform_international(df):
     
     print(f"  [Transform] 해외 거래 {len(df_transformed)}건 처리 완료."); 
     return df_transformed[['account', 'date', 'action_type', 'action_detail', 'ticker', 'name', 'quantity', 'settlement_krw', 'currency', 'settlement_foreign']]
+
+
+# --- [함수 정의 3] raw_체결 (국내 시장매매) 변환 ---
+def transform_chey(df, commission_rate=CHEY_COMMISSION_RATE, tax_rate=CHEY_TAX_RATE):
+    """raw_체결(국내 보통매매 매수/매도) → 총계정원장 변환.
+    - 정산금액이 채워져 있으면 그대로 사용 (과거 마이그레이션 = 거래내역의 정확값).
+    - 비어 있으면 거래대금(수량×단가)에 수수료/세금 추정 적용 (앞으로 붙여넣는 체결분)."""
+    print("  [Transform] raw_체결(국내 시장매매) 변환 ...")
+    out_cols = ['account', 'date', 'action_type', 'action_detail',
+                'ticker', 'name', 'quantity', 'settlement_krw', 'currency']
+    if df is None or df.empty:
+        print("  [Transform] raw_체결 이 비어있습니다.")
+        return pd.DataFrame(columns=out_cols)
+
+    df = df.replace('', np.nan).copy()
+    df = df.dropna(subset=['계좌번호', '체결일', '매매구분'], how='any')
+    if df.empty:
+        print("  [Transform] raw_체결 유효 행 없음.")
+        return pd.DataFrame(columns=out_cols)
+
+    t = pd.DataFrame(index=df.index)
+    t['account'] = df['계좌번호'].astype(str).str.strip()
+    t['date'] = pd.to_datetime(df['체결일'], errors='coerce')
+    t['action_type'] = 'Trade'
+    side = df['매매구분'].astype(str).str.strip()
+    t['action_detail'] = np.where(side.str.contains('매도'), 'Sell',
+                          np.where(side.str.contains('매수'), 'Buy', 'Unknown'))
+    t['ticker'] = df['종목코드'].astype(str).str.strip()
+    t['name'] = df['종목명'].astype(str).str.strip()
+    t['currency'] = 'KRW'
+
+    def _num(col):
+        if col not in df.columns:
+            return pd.Series(np.nan, index=df.index)
+        return pd.to_numeric(
+            df[col].astype(str).str.replace(',', '', regex=False).str.strip(),
+            errors='coerce')
+
+    qty = _num('체결수량')
+    price = _num('체결평균단가')
+    settle_raw = _num('정산금액')
+    t['quantity'] = qty.fillna(0)
+
+    # 불량 행 제거 (날짜 변환 실패 / 수량 0 / 매수·매도 미상)
+    bad = t['date'].isna() | (t['quantity'] == 0) | (t['action_detail'] == 'Unknown')
+    if bad.any():
+        print(f"    [!] raw_체결: 날짜/수량/매매구분 불량 {int(bad.sum())}건 제외")
+        keep = ~bad
+        t = t[keep]; qty = qty[keep]; price = price[keep]; settle_raw = settle_raw[keep]
+    if t.empty:
+        return pd.DataFrame(columns=out_cols)
+
+    # 정산금액: 실값 우선, 없으면 거래대금 ± 수수료/세금 추정
+    gross = (qty * price).astype(float)
+    is_buy = (t['action_detail'] == 'Buy')
+    est = gross.copy()
+    est[is_buy] = gross[is_buy] * (1 + commission_rate)
+    est[~is_buy] = gross[~is_buy] * (1 - commission_rate - tax_rate)
+
+    settle_abs = settle_raw.abs()
+    use_est = settle_abs.isna() | (settle_abs == 0)
+    settle_abs = settle_abs.where(~use_est, est.abs())
+
+    # 부호: 매수 = 현금유출(음수), 매도 = 현금유입(양수)  ← transform_domestic 과 동일
+    signed = settle_abs.copy()
+    signed[is_buy] = signed[is_buy] * -1
+    t['settlement_krw'] = signed.fillna(0)
+
+    n_est = int(use_est.sum())
+    print(f"  [Transform] raw_체결 매매 {len(t)}건 처리 "
+          f"(정산금액 실값 {len(t) - n_est} / 추정 {n_est})")
+    return t[out_cols]
+
+
+# --- [감사] 거래내역 매매 ↔ raw_체결 대조 (결과엔 영향 없음, 경고만) ---
+def audit_chey_vs_domestic(df_domestic, df_chey, lag_days=4):
+    """raw_domestic 의 보통매매 ↔ raw_체결 누적수량 대조.
+    거래내역은 T+2 늦게 도착하므로 최근 lag_days 일은 비교 제외.
+    어긋나면 경고만 출력 (체결 붙여넣기 누락·수기 오타 등 탐지용)."""
+    print("\n  [Audit] 거래내역 매매 ↔ raw_체결 대조 중 ...")
+    if df_domestic is None or df_domestic.empty or df_chey is None or df_chey.empty:
+        print("  [Audit] 한쪽 데이터가 비어 감사 건너뜀."); return
+    try:
+        cutoff = pd.Timestamp.today().normalize() - pd.Timedelta(days=lag_days)
+
+        def _summary(src, datecol, sidecol, qtycol):
+            x = src.copy()
+            x['_acc'] = x['계좌번호'].astype(str).str.strip()
+            x['_tkr'] = x['종목코드'].astype(str).str.strip()
+            x['_dt'] = pd.to_datetime(x[datecol], errors='coerce')
+            x['_side'] = np.where(x[sidecol].astype(str).str.contains('매도'), '매도', '매수')
+            x['_qty'] = pd.to_numeric(
+                x[qtycol].astype(str).str.replace(',', '', regex=False),
+                errors='coerce').fillna(0)
+            x = x[x['_dt'] <= cutoff]
+            return x.groupby(['_acc', '_tkr', '_side'])['_qty'].sum()
+
+        d = df_domestic[df_domestic['거래종류'].astype(str).apply(is_market_domestic_trade)]
+        a = _summary(d, '거래일자', '거래종류', '거래수량')
+        b = _summary(df_chey, '체결일', '매매구분', '체결수량')
+        diff = a.subtract(b, fill_value=0)
+        diff = diff[diff.abs() > 0.001]
+        if diff.empty:
+            print(f"  [Audit] OK — 거래내역과 raw_체결의 매매 수량 일치 ({cutoff.date()} 이전).")
+        else:
+            print(f"  [Audit] !! {len(diff)}건 불일치 (거래내역 − raw_체결):")
+            for (acc, tkr, side), v in diff.items():
+                print(f"      계좌 {acc} / {tkr} / {side}: {v:+,.0f}주")
+            print("  [Audit] → raw_체결 누락 또는 수기입력 오타 가능. 확인 권장.")
+    except Exception as e:
+        print(f"  [Audit] 감사 중 오류(무시하고 진행): {e}")

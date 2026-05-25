@@ -86,7 +86,7 @@ def run_backfill():
             if pd.notna(row['ticker']):
                 exchange_map[str(row['ticker'])] = str(row.get('exchange', '')).upper()
 
-    domestic_txn = data_transformer.transform_domestic(df_domestic)
+    domestic_txn = data_transformer.transform_domestic(df_domestic, exclude_market_trades=False)  # 백필은 raw_domestic 전체 사용
     intl_txn = data_transformer.transform_international(df_intl)
     
     if intl_txn.empty:

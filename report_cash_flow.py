@@ -18,7 +18,7 @@ def run_cash_flow_report():
     df_domestic, _ = google_api.get_all_records_as_text(config.SHEET_RAW_DOMESTIC)
     df_intl, _ = google_api.get_all_records_as_text(config.SHEET_RAW_INTL)
     
-    dom_trans = data_transformer.transform_domestic(df_domestic)
+    dom_trans = data_transformer.transform_domestic(df_domestic, exclude_market_trades=False)
     intl_trans = data_transformer.transform_international(df_intl)
     
     df_all = pd.concat([dom_trans, intl_trans], ignore_index=True)
