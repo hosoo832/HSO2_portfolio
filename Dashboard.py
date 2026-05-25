@@ -986,6 +986,22 @@ if view == "📓 작전 일지":
                 pass
             return rows
 
+        # 직전 영업일 계산 — raw_체결의 체결일을 거래일 달력으로 사용 (휴일·주말 자동 처리)
+        def _prev_business_day(date_str):
+            """date_str 직전의 가장 최근 체결일(영업일) 반환. raw_체결 기준. 없으면 date_str."""
+            try:
+                df_c = load_sheet("raw_체결")
+                if df_c.empty or '체결일' not in df_c.columns:
+                    return date_str
+                dts = pd.to_datetime(df_c['체결일'], errors='coerce').dropna()
+                target = pd.to_datetime(date_str)
+                prev = dts[dts < target]
+                if prev.empty:
+                    return date_str
+                return prev.max().strftime('%Y-%m-%d')
+            except Exception:
+                return date_str
+
         # 기존 매매 내역 파싱
         existing_trades = existing.get('매매내역', '').strip()
         # session_state 의 reload 신호 (form 바깥의 reload 버튼이 설정)
@@ -1001,14 +1017,15 @@ if view == "📓 작전 일지":
         _init_key = f'_trades_init_data_{sel_date_str}'
 
         if should_reload_raw:
-            with st.spinner("raw 시트 로딩 중... (3000+ 행 처리 ~5초)"):
-                auto_trades = _fetch_trades_for_date(sel_date_str)
+            _load_date = _prev_business_day(sel_date_str)
+            with st.spinner(f"raw 시트 로딩 중... ({_load_date} 매매)"):
+                auto_trades = _fetch_trades_for_date(_load_date)
             if auto_trades:
                 st.session_state[_init_key] = pd.DataFrame(auto_trades)
-                st.success(f"📥 raw 시트에서 {len(auto_trades)}건 매매 불러옴")
+                st.success(f"📥 {_load_date} (직전 영업일) 매매 {len(auto_trades)}건 불러옴")
             else:
                 st.session_state[_init_key] = pd.DataFrame(empty_default_rows)
-                st.info(f"raw 시트에 {sel_date_str} 매매 없음")
+                st.info(f"{_load_date} (직전 영업일) 매매 없음")
         elif _init_key not in st.session_state:
             # 처음 — 저장된 내용 파싱 또는 빈 기본값
             if existing_trades:
