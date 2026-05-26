@@ -51,12 +51,14 @@ def main_run():
         # --- [STEP 1] 구글 시트에서 원본 데이터 읽기 ---
         print("\n--- [MAIN] STEP 1: 원본 데이터 4개 읽기 시작 ---")
         df_domestic, _ = google_api.get_all_records_as_text(config.SHEET_RAW_DOMESTIC)
-        df_chey, _ = google_api.get_all_records_as_text(config.SHEET_RAW_CHEY)   # [신규] 국내 시장매매
-        # 키움 체결내역 raw(2줄/건) → 평탄화해서 raw_체결 에 합침
+        # 키움 체결내역 raw → 평탄화 → raw_체결 에 영구 누적(append) + raw_체결_키움 비움
+        # (중복 방지: 계좌·체결일·종목·매매·수량 동일 행은 자동 스킵)
         _kiwoom_raw = google_api.get_raw_values(config.SHEET_RAW_CHEY_KIWOOM)
-        _df_kiwoom = data_transformer.flatten_kiwoom_chey(_kiwoom_raw)
-        if not _df_kiwoom.empty:
-            df_chey = pd.concat([df_chey, _df_kiwoom], ignore_index=True)
+        if _kiwoom_raw:
+            _df_kiwoom = data_transformer.flatten_kiwoom_chey(_kiwoom_raw)
+            if not _df_kiwoom.empty:
+                google_api.absorb_kiwoom_chey(_df_kiwoom)
+        df_chey, _ = google_api.get_all_records_as_text(config.SHEET_RAW_CHEY)   # 누적분 포함
         df_intl, _ = google_api.get_all_records_as_text(config.SHEET_RAW_INTL)
         df_master, master_sheet_instance = google_api.get_all_records_as_text(config.SHEET_MASTER_DATA)
         

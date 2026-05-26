@@ -90,6 +90,91 @@ def get_raw_values(sheet_name):
         return []
 
 
+# --- [함수] flatten 결과를 raw_체결 에 영구 누적 + raw_체결_키움 비움 ---
+def absorb_kiwoom_chey(df_new):
+    """flatten_kiwoom_chey 결과(clean 1줄/건 DataFrame)를 raw_체결 에 append.
+    중복 방지: (계좌·체결일·종목코드·매매구분·체결수량) 동일 행은 자동 스킵.
+    누적 성공 시 raw_체결_키움 시트는 비움(다음 paste 대비)."""
+    if df_new is None or df_new.empty:
+        return
+    try:
+        ws_chey = sheet_file.worksheet('raw_체결')
+        existing = ws_chey.get_all_values()
+    except Exception as e:
+        print(f"  [Absorb] raw_체결 읽기 실패 — 누적 중단: {e}")
+        return
+
+    def _fmt_num(v, blank_if_zero=False):
+        s = str(v).strip()
+        if s in ('', 'nan', 'NaN', 'None'):
+            return ''
+        try:
+            f = float(s.replace(',', ''))
+            if blank_if_zero and f == 0:
+                return ''
+            return str(int(f)) if f.is_integer() else f"{f:g}"
+        except Exception:
+            return s
+
+    existing_keys = set()
+    if existing:
+        header = existing[0]
+        idx = {h: i for i, h in enumerate(header)}
+        need = ['계좌번호', '체결일', '종목코드', '매매구분', '체결수량']
+        if not all(c in idx for c in need):
+            print(f"  [Absorb] raw_체결 헤더 이상 — 누적 중단. 헤더: {header}")
+            return
+        for r in existing[1:]:
+            def _c(col):
+                i = idx[col]; return r[i].strip() if i < len(r) else ''
+            existing_keys.add((
+                _c('계좌번호'), _c('체결일'), _c('종목코드'),
+                _c('매매구분'), _fmt_num(_c('체결수량')),
+            ))
+
+    new_rows = []
+    for _, r in df_new.iterrows():
+        try:
+            key = (
+                str(r['계좌번호']).strip(), str(r['체결일']).strip(),
+                str(r['종목코드']).strip(), str(r['매매구분']).strip(),
+                _fmt_num(r['체결수량']),
+            )
+        except Exception:
+            continue
+        if key in existing_keys:
+            continue
+        existing_keys.add(key)
+        new_rows.append([
+            str(r['계좌번호']).strip(),
+            str(r['체결일']).strip(),
+            str(r['종목코드']).strip(),
+            str(r['종목명']).strip(),
+            str(r['매매구분']).strip(),
+            _fmt_num(r['체결수량']),
+            _fmt_num(r.get('체결평균단가', '')),
+            _fmt_num(r.get('정산금액', ''), blank_if_zero=True),
+        ])
+
+    if not new_rows:
+        print("  [Absorb] raw_체결_키움 → 추가할 신규 매매 없음(이미 누적됨).")
+    else:
+        try:
+            ws_chey.append_rows(new_rows, value_input_option='RAW')
+            print(f"  [Absorb] raw_체결에 신규 {len(new_rows)}행 추가.")
+        except Exception as e:
+            print(f"  [Absorb] raw_체결 append 실패 — 중단: {e}")
+            return
+
+    try:
+        ws_kiwoom = sheet_file.worksheet('raw_체결_키움')
+        ws_kiwoom.clear()
+        time.sleep(0.5)
+        print("  [Absorb] raw_체결_키움 시트 비움.")
+    except Exception as e:
+        print(f"  [Absorb] raw_체결_키움 비우기 실패 — 수동 정리 권장: {e}")
+
+
 # --- 3. [함수] 구글 시트에 업로드 (서식 지정) ---
 # (원본 v47 로직과 동일)
 def upload_to_google_sheet(df_to_upload, sheet_name):
