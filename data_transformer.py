@@ -525,6 +525,8 @@ def flatten_kiwoom_chey(rows):
                 _amt=('_amt', 'sum')).reset_index()
     con['체결평균단가'] = (con['_amt'] / con['체결수량']).replace(
         [np.inf, -np.inf], np.nan).round(2)
-    con['정산금액'] = ''
+    # 정산금액 = 거래대금(수량×단가) — 마이그레이션 데이터와 같은 패턴(gross)
+    con['정산금액'] = con['_amt'].apply(
+        lambda x: str(int(round(x))) if pd.notna(x) and x > 0 else '')
     print(f"  [Flatten] raw_체결_키움: 원본 {len(df)}건 → 통합 {len(con)}건")
     return con[out_cols]
