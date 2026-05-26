@@ -500,6 +500,9 @@ def flatten_kiwoom_chey(rows):
             continue
         acc = cell(o, 0) or cell(e, 0)
         code = cell(o, 4)                       # 종목번호
+        # Google Sheets paste 가 leading 0 을 떨어뜨리는 경우 복구 (6자리 숫자 코드만)
+        if code.isdigit() and 0 < len(code) < 6:
+            code = code.zfill(6)
         otype = cell(o, 6)                      # 주문유형구분 (현금매수/매도)
         date = cell(e, 1)                       # 주문일자
         name = cell(e, 2)                       # 종목명
