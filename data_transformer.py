@@ -480,26 +480,37 @@ def flatten_kiwoom_chey(rows):
     def cell(rw, idx):
         return str(rw[idx]).strip() if rw is not None and len(rw) > idx else ''
 
+    def is_order(r): return cell(r, 1) == '주식'
+    def is_exec(r):
+        v = cell(r, 1)
+        return v not in ('', '주식채권', '주문일자', '주식') and '-' in v
+
+    # 인접한 2행씩 통째로 짝지음 — (주문,체결) 또는 (체결,주문) 둘 다 허용.
+    # 헤더행/빈행 등 짝이 아니면 1칸씩 전진해서 다시 시도.
     recs = []
     i, n = 0, len(rows)
-    while i < n:
-        if cell(rows[i], 1) == '주식' and i + 1 < n:   # 주문정보행
-            o, e = rows[i], rows[i + 1]
-            acc = cell(o, 0) or cell(e, 0)
-            code = cell(o, 4)                       # 종목번호
-            otype = cell(o, 6)                      # 주문유형구분 (현금매수/매도)
-            date = cell(e, 1)                       # 주문일자
-            name = cell(e, 2)                       # 종목명
-            qty = cell(e, 5).replace(',', '')       # 체결수량
-            price = cell(e, 6).replace(',', '')     # 체결평균단가
-            side = '매도' if '매도' in otype else ('매수' if '매수' in otype else '')
-            if acc and date and qty and side:
-                recs.append({'계좌번호': acc, '체결일': date, '종목코드': code,
-                             '종목명': name, '매매구분': side,
-                             '체결수량': qty, '체결평균단가': price})
-            i += 2
+    while i < n - 1:
+        r1, r2 = rows[i], rows[i + 1]
+        if is_order(r1) and is_exec(r2):
+            o, e = r1, r2
+        elif is_exec(r1) and is_order(r2):
+            o, e = r2, r1
         else:
-            i += 1   # 헤더행/빈행 스킵
+            i += 1
+            continue
+        acc = cell(o, 0) or cell(e, 0)
+        code = cell(o, 4)                       # 종목번호
+        otype = cell(o, 6)                      # 주문유형구분 (현금매수/매도)
+        date = cell(e, 1)                       # 주문일자
+        name = cell(e, 2)                       # 종목명
+        qty = cell(e, 5).replace(',', '')       # 체결수량
+        price = cell(e, 6).replace(',', '')     # 체결평균단가
+        side = '매도' if '매도' in otype else ('매수' if '매수' in otype else '')
+        if acc and date and qty and side:
+            recs.append({'계좌번호': acc, '체결일': date, '종목코드': code,
+                         '종목명': name, '매매구분': side,
+                         '체결수량': qty, '체결평균단가': price})
+        i += 2
 
     if not recs:
         print("  [Flatten] raw_체결_키움: 변환된 매매 없음.")
