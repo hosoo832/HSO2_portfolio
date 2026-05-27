@@ -51,14 +51,6 @@ def main_run():
         # --- [STEP 1] 구글 시트에서 원본 데이터 읽기 ---
         print("\n--- [MAIN] STEP 1: 원본 데이터 4개 읽기 시작 ---")
         df_domestic, _ = google_api.get_all_records_as_text(config.SHEET_RAW_DOMESTIC)
-        # 키움 체결내역 raw → 평탄화 → raw_체결 에 영구 누적(append) + raw_체결_키움 비움
-        # (중복 방지: 계좌·체결일·종목·매매·수량 동일 행은 자동 스킵)
-        _kiwoom_raw = google_api.get_raw_values(config.SHEET_RAW_CHEY_KIWOOM)
-        if _kiwoom_raw:
-            _df_kiwoom = data_transformer.flatten_kiwoom_chey(_kiwoom_raw)
-            if not _df_kiwoom.empty:
-                google_api.absorb_kiwoom_chey(_df_kiwoom)
-        df_chey, _ = google_api.get_all_records_as_text(config.SHEET_RAW_CHEY)   # 누적분 포함
         df_intl, _ = google_api.get_all_records_as_text(config.SHEET_RAW_INTL)
         df_master, master_sheet_instance = google_api.get_all_records_as_text(config.SHEET_MASTER_DATA)
         
@@ -89,18 +81,14 @@ def main_run():
 
         # --- [STEP 3] 원본 데이터를 '총계정원장'으로 '번역' ---
         print("\n--- [MAIN] STEP 3: 원본 데이터를 '총계정원장'으로 변환 중 ---")
-        # 보통매매 매수/매도 = raw_체결 담당. raw_domestic 은 그 외(입출금·배당·환전·입고·분할 등).
-        domestic_transactions = data_transformer.transform_domestic(df_domestic, exclude_market_trades=True)
-        chey_transactions = data_transformer.transform_chey(df_chey)
+        # raw_domestic 한 곳에서 모든 국내 거래 처리 (체결↔거래내역 dedup은 transform_domestic 내부)
+        domestic_transactions = data_transformer.transform_domestic(df_domestic)
         intl_transactions = data_transformer.transform_international(df_intl)
-
-        # [감사] 거래내역 매매 ↔ raw_체결 대조 (경고만, 결과엔 영향 없음)
-        data_transformer.audit_chey_vs_domestic(df_domestic, df_chey)
 
         if intl_transactions.empty:
              intl_transactions = pd.DataFrame(columns=['account', 'date', 'action_type', 'action_detail', 'ticker', 'name', 'quantity', 'settlement_krw', 'currency', 'settlement_foreign'])
 
-        df_transactions = pd.concat([domestic_transactions, chey_transactions, intl_transactions], ignore_index=True)
+        df_transactions = pd.concat([domestic_transactions, intl_transactions], ignore_index=True)
         df_transactions['date'] = pd.to_datetime(df_transactions['date'], errors='coerce')
         df_transactions = df_transactions.dropna(subset=['date'])
         df_transactions['ticker'] = df_transactions['ticker'].astype(str).str.strip().replace('', 'N/A')
@@ -146,10 +134,8 @@ def main_run():
 
         # --- [STEP 6] 계좌별 현금 잔고 계산 ---
         print("\n--- [MAIN] STEP 6: 계좌별 현금 잔고 계산 중 ---")
-        # 현금 계산엔 raw_체결 매매도 포함 (매수=현금유출, 매도=현금유입)
         df_cash_rows, total_cash_for_dashboard = finance_core.calculate_cash_balances(
-            pd.concat([domestic_transactions, chey_transactions], ignore_index=True),
-            intl_transactions, current_rates
+            domestic_transactions, intl_transactions, current_rates
         )
 
         # --- [STEP 7] 1차 대시보드 생성 ---

@@ -891,55 +891,42 @@ if view == "📓 작전 일지":
 
         # raw 시트에서 해당 날짜 매매 자동 import 헬퍼
         def _fetch_trades_for_date(date_str):
-            """raw_체결(국내 시장매매) + raw_domestic(재투자 등) + raw_international 에서 매매 추출."""
+            """raw_domestic(매매·재투자) + raw_international 에서 해당 날짜 매매 추출.
+            보통매매: 체결일 기준 (체결↔거래내역 dedup). 재투자: 거래일자 기준."""
             rows = []
-            # 국내 시장매매 — raw_체결 (체결일 기준)
-            try:
-                df_chey = _load_chey_all()
-                if not df_chey.empty and '체결일' in df_chey.columns:
-                    df_chey = df_chey.copy()
-                    df_chey['_date_iso'] = pd.to_datetime(
-                        df_chey['체결일'], errors='coerce'
-                    ).dt.strftime('%Y-%m-%d')
-                    today_chey = df_chey[df_chey['_date_iso'] == date_str]
-                    for _, r in today_chey.iterrows():
-                        action = '매도' if '매도' in str(r.get('매매구분', '')) else '매수'
-                        acc = clean_account(r.get('계좌번호', ''))
-                        grp = _account_to_group(acc)
-                        name = str(r.get('종목명', '')).strip()
-                        qty = str(r.get('체결수량', '')).strip().replace(',', '')
-                        prc = str(r.get('체결평균단가', '')).strip().replace(',', '')
-                        amt = str(r.get('정산금액', '')).strip().replace(',', '')
-                        try:
-                            qf = float(qty) if qty else 0
-                            pf = float(prc) if prc else 0
-                            af = float(amt) if amt else qf * pf   # 정산금액 비면 거래대금
-                            price_str = f"₩{int(pf):,}" if pf > 0 else ''
-                            settle_str = f"₩{int(af):,}" if af > 0 else ''
-                            grp_aum = _group_aum.get(grp, 0)
-                            ratio_str = f"{(af / grp_aum * 100):.2f}%" if grp_aum > 0 and af > 0 else ''
-                        except Exception:
-                            price_str = ''; settle_str = ''; ratio_str = ''
-                        rows.append({
-                            '계좌': acc, '그룹': grp, '매매': action, '종목명': name,
-                            '가격': price_str, '정산금액': settle_str,
-                            '그룹비중': ratio_str, '이유': '',
-                        })
-            except Exception:
-                pass
-            # 국내 재투자 등 (보통매매 매수/매도는 raw_체결 담당) — raw_domestic
+            # 국내 — raw_domestic (체결일 + dedup)
             try:
                 df_dom = load_sheet("raw_domestic")
                 if not df_dom.empty and '거래일자' in df_dom.columns:
                     df_dom = df_dom.copy()
-                    df_dom['_date_iso'] = pd.to_datetime(
-                        df_dom['거래일자'], errors='coerce'
-                    ).dt.strftime('%Y-%m-%d')
-                    today_dom = df_dom[df_dom['_date_iso'] == date_str]
-                    for _, r in today_dom.iterrows():
-                        search = str(r.get('거래종류', '')) + ' ' + str(r.get('적요명', ''))
-                        if '재투자' not in search:
-                            continue
+                    date_col = '체결일' if '체결일' in df_dom.columns else '거래일자'
+                    df_dom['_chey_iso'] = pd.to_datetime(
+                        df_dom[date_col], errors='coerce').dt.strftime('%Y-%m-%d')
+                    df_dom['_trd_iso'] = pd.to_datetime(
+                        df_dom['거래일자'], errors='coerce').dt.strftime('%Y-%m-%d')
+                    memo_col = (df_dom['적요명'].astype(str) if '적요명' in df_dom.columns
+                                else pd.Series([''] * len(df_dom), index=df_dom.index))
+                    df_dom['_search'] = df_dom['거래종류'].astype(str) + ' ' + memo_col
+                    is_chey_flag = (df_dom['체결'].astype(str).str.strip().str.upper() == 'Y'
+                                    if '체결' in df_dom.columns
+                                    else pd.Series(False, index=df_dom.index))
+
+                    is_market = df_dom['_search'].apply(
+                        lambda t: '보통매매' in t and 'OTC' not in t)
+                    mkt = df_dom[is_market & (df_dom['_chey_iso'] == date_str)].copy()
+                    if len(mkt) > 0:
+                        mkt['_side'] = mkt['_search'].apply(
+                            lambda t: '매도' if '매도' in t else '매수')
+                        mkt['_is_chey'] = is_chey_flag[mkt.index]
+                        has_dom = mkt.groupby(['계좌번호', '종목코드', '_side'])['_is_chey'].transform(
+                            lambda x: (~x).any())
+                        mkt = mkt[~(mkt['_is_chey'] & has_dom)]
+
+                    is_reinv = df_dom['_search'].apply(lambda t: '재투자' in t)
+                    reinv = df_dom[is_reinv & (df_dom['_trd_iso'] == date_str)]
+
+                    for _, r in pd.concat([mkt, reinv]).iterrows():
+                        search = r.get('_search', '')
                         action = '매도' if '매도' in search else '매수'
                         acc = clean_account(r.get('계좌번호', ''))
                         grp = _account_to_group(acc)
@@ -1000,14 +987,17 @@ if view == "📓 작전 일지":
                 pass
             return rows
 
-        # 직전 영업일 계산 — raw_체결의 체결일을 거래일 달력으로 사용 (휴일·주말 자동 처리)
+        # 직전 영업일 — raw_domestic 의 보통매매 체결일(AA열) 기준
         def _prev_business_day(date_str):
-            """date_str 직전의 가장 최근 체결일(영업일) 반환. raw_체결 기준. 없으면 date_str."""
+            """date_str 직전의 가장 최근 매매 체결일 반환. 없으면 date_str."""
             try:
-                df_c = _load_chey_all()
-                if df_c.empty or '체결일' not in df_c.columns:
+                df = load_sheet("raw_domestic")
+                if df.empty or '거래종류' not in df.columns:
                     return date_str
-                dts = pd.to_datetime(df_c['체결일'], errors='coerce').dropna()
+                date_col = '체결일' if '체결일' in df.columns else '거래일자'
+                mask = df['거래종류'].astype(str).apply(
+                    lambda t: '보통매매' in t and 'OTC' not in t)
+                dts = pd.to_datetime(df.loc[mask, date_col], errors='coerce').dropna()
                 target = pd.to_datetime(date_str)
                 prev = dts[dts < target]
                 if prev.empty:

@@ -15,11 +15,55 @@ CHEY_TAX_RATE = 0.0015           # 증권거래세 (매도 시에만, 2025~ 0.15
 
 
 def is_market_domestic_trade(거래종류):
-    """raw_domestic 의 '보통매매' 매수/매도(장외 OTC 제외) 여부.
-    → 이 행들은 raw_체결 에서 처리하므로 transform_domestic 에서 제외 대상.
-    재투자/무상주입고/액면분할 등은 '보통매매'가 아니므로 자동으로 False."""
+    """raw_domestic 의 '보통매매' 매수/매도(장외 OTC 제외) 여부."""
     t = str(거래종류)
     return ('보통매매' in t) and ('OTC' not in t)
+
+
+def _apply_chey_dedup(df):
+    """[D 옵션] 보통매매 매수/매도 행에 대해:
+    1. 체결일 컬럼(AA, 사용자 수식)이 있으면 거래일자를 체결일로 덮어쓰기
+    2. 같은 (계좌·체결일·종목·매수매도)에 체결(Y) + 거래내역(빈칸) 둘 다 있으면
+       → 체결 행 drop (거래내역 우선). 분할체결만 있는 경우엔 모두 유지(qty 합산).
+    3. 비매매 행은 손대지 않음."""
+    is_market = df['거래종류'].astype(str).apply(is_market_domestic_trade)
+    if not is_market.any():
+        return df
+
+    if '체결일' in df.columns:
+        chey_col = pd.to_datetime(
+            df['체결일'].astype(str).str.strip().replace({'': None, 'nan': None}),
+            errors='coerce')
+    else:
+        chey_col = pd.Series(pd.NaT, index=df.index)
+    trd_col = pd.to_datetime(df['거래일자'], errors='coerce')
+    chey_eff = chey_col.fillna(trd_col)
+
+    if '체결' in df.columns:
+        is_chey_flag = df['체결'].astype(str).str.strip().str.upper() == 'Y'
+    else:
+        is_chey_flag = pd.Series(False, index=df.index)
+
+    df_m = df[is_market].copy()
+    df_m['_chey'] = chey_eff[is_market]
+    df_m['_is_chey'] = is_chey_flag[is_market]
+    df_m['_side'] = df_m['거래종류'].astype(str).apply(
+        lambda t: '매도' if '매도' in t else '매수')
+    df_m['_acc'] = df_m['계좌번호'].astype(str).str.strip()
+    df_m['_code'] = df_m['종목코드'].astype(str).str.strip()
+
+    key = ['_acc', '_chey', '_code', '_side']
+    has_dom = df_m.groupby(key)['_is_chey'].transform(lambda x: (~x).any())
+    drop_mask = df_m['_is_chey'] & has_dom
+    n_drop = int(drop_mask.sum())
+    if n_drop:
+        print(f"  [Transform] 보통매매 dedup: 체결 행 {n_drop}건 자동 무시 (같은 그룹의 거래내역 우선)")
+    df_m = df_m[~drop_mask]
+
+    df_m['거래일자'] = df_m['_chey'].dt.strftime('%Y-%m-%d')
+    df_m = df_m.drop(columns=['_chey', '_is_chey', '_side', '_acc', '_code'])
+
+    return pd.concat([df[~is_market], df_m]).sort_index()
 # =============================================================================
 
 # --- [헬퍼 함수 1] 국내 거래내역 '번역' (v128 - 거래종류+적요명 쌍끌이 검사) ---
@@ -92,12 +136,8 @@ def transform_domestic(df, exclude_market_trades=True):
 
     df = df.dropna(subset=['정산금액', '거래수량'], how='all').copy()
 
-    # [raw_체결 도입] 보통매매 매수/매도는 raw_체결 에서 처리 → 여기선 제외
-    if exclude_market_trades and '거래종류' in df.columns:
-        _mkt = df['거래종류'].astype(str).apply(is_market_domestic_trade)
-        if _mkt.any():
-            print(f"  [Transform] 보통매매 매수/매도 {int(_mkt.sum())}건 제외 → raw_체결 담당")
-            df = df[~_mkt].copy()
+    # [D 옵션] 보통매매 매수/매도: 체결일(AA열) 적용 + 체결↔거래내역 dedup
+    df = _apply_chey_dedup(df)
 
     df_transformed = pd.DataFrame(index=df.index)
     df_transformed['account'] = df['계좌번호'].astype(str)
