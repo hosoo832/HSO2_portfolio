@@ -209,9 +209,10 @@ GROUP_INCEPTION_DATES = {
 }
 MILESTONE_DATES = {
     '3기 시작': '2025-10-29',
+    '4기 시작': '2026-05-18',
 }
 ```
-→ performance_summary 에 `지정(25-05-14~)`, `지정(25-07-21~)`, `지정(25-10-29~)` 컬럼 자동 생성.
+→ performance_summary 에 `지정(25-05-14~)`, `지정(25-07-21~)`, `지정(25-10-29~)`, `지정(26-05-18~)` 컬럼 자동 생성.
 
 ### 5. KST 타임존
 Streamlit Cloud 서버는 UTC 기본. `Dashboard.py` 에 `now_kst()` 헬퍼 정의 — 모든 시간 표시는 이걸로 통일.

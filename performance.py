@@ -137,7 +137,7 @@ ACCOUNT_INCEPTION_DATES = {
 # 추가하면 자동으로 '지정(YY-MM-DD~)' 컬럼이 모든 행에 생성됨
 MILESTONE_DATES = {
     '3기 시작': '2025-10-29',
-    # '4기 시작': '2026-XX-XX',  # 시작일 확정되면 추가
+    '4기 시작': '2026-05-18',
 }
 
 MARKET_COL_MAP = {
@@ -425,10 +425,34 @@ def run_performance_analysis():
         row['M-1(지난달)'] = calculate_return(daily, m1_start, last_m_end, calc_method)
         row['M-2(2달전)'] = calculate_return(daily, m2_start, m1_start, calc_method)
 
+        # 단기 손익 (profit_end - profit_start) — Dashboard 단기 손익 차트용
+        # 수익률(%) 옆에 ₩ 손익 동시 표시 위해 같은 기간 set 으로 손익 컬럼도 생성
+        def _calc_pl(s_dt, e_dt):
+            try:
+                s_pd = s_dt if isinstance(s_dt, pd.Timestamp) else pd.to_datetime(s_dt)
+                e_pd = e_dt if isinstance(e_dt, pd.Timestamp) else pd.to_datetime(e_dt)
+                idx_s = daily.index.asof(s_pd)
+                idx_e = daily.index.asof(e_pd)
+                p_s = daily.loc[idx_s]['profit'] if pd.notna(idx_s) else 0
+                p_e = daily.loc[idx_e]['profit'] if pd.notna(idx_e) else 0
+                return int(p_e - p_s)
+            except Exception:
+                return 0
+
+        row['손익_1일'] = _calc_pl(prev_bday, latest_date)
+        row['손익_WTD(이번주)'] = _calc_pl(last_fri, latest_date)
+        row['손익_W-1(저번주)'] = _calc_pl(last_fri - timedelta(days=7), last_fri)
+        row['손익_W-2(2주전)'] = _calc_pl(last_fri - timedelta(days=14), last_fri - timedelta(days=7))
+        row['손익_W-3(3주전)'] = _calc_pl(last_fri - timedelta(days=21), last_fri - timedelta(days=14))
+        row['손익_MTD(이번달)'] = _calc_pl(last_m_end, latest_date)
+        row['손익_M-1(지난달)'] = _calc_pl(m1_start, last_m_end)
+        row['손익_M-2(2달전)'] = _calc_pl(m2_start, m1_start)
+
         # 연도별 지표 (2020년까지 자동 추가)
         curr_year = latest_date.year
         row['YTD'] = calculate_return(daily, f"{curr_year}-01-01", latest_date, calc_method)
         row['MWR_YTD'], _ = calculate_mwr_and_cap(daily, f"{curr_year}-01-01", latest_date)
+        row['손익_YTD'] = _calc_pl(f"{curr_year}-01-01", latest_date)
         
         for year in range(curr_year - 1, 2019, -1):
             s_y = f"{year}-01-01"

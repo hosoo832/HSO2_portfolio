@@ -1906,6 +1906,7 @@ period_candidates = [
     '지정(25-05-14~)',  # 멘토 2기 운용 시작
     '지정(25-07-21~)',  # HS 포트폴리오 분리 시작
     '지정(25-10-29~)',  # 멘토 3기 시작
+    '지정(26-05-18~)',  # 멘토 4기 시작
 ]
 period_options = [p for p in period_candidates if not df_perf.empty and p in df_perf.columns]
 
@@ -2002,19 +2003,37 @@ st.divider()
 # ---------------------------------------------------------
 st.subheader("📈 단기 수익률")
 
+# ---------------------------------------------------------
+# 단기 수익률 / 단기 손익 차트 — 13컬럼 통일 (2026-06-03)
+# 1일/WTD/W-1/W-2/W-3/MTD/M-1/M-2/YTD/5/14~/7/21~/10/29~/누적
+# 수익률 % 와 손익 ₩ 둘 다 같은 기간 세트로 표시
+# ---------------------------------------------------------
+# (라벨 표시명, 수익률 % 컬럼, 손익 ₩ 컬럼)
+UNIFIED_PERIODS = [
+    ('1일',              '1일',              '손익_1일'),
+    ('WTD',              'WTD(이번주)',      '손익_WTD(이번주)'),
+    ('W-1',              'W-1(저번주)',      '손익_W-1(저번주)'),
+    ('W-2',              'W-2(2주전)',       '손익_W-2(2주전)'),
+    ('W-3',              'W-3(3주전)',       '손익_W-3(3주전)'),
+    ('MTD<br>(이번달)',  'MTD(이번달)',      '손익_MTD(이번달)'),
+    ('M-1<br>(지난달)',  'M-1(지난달)',      '손익_M-1(지난달)'),
+    ('M-2<br>(2달전)',   'M-2(2달전)',       '손익_M-2(2달전)'),
+    ('YTD',              'YTD',              '손익_YTD'),
+    ('5/14~<br>(본격투자)', '지정(25-05-14~)', '지정_손익(25-05-14~)'),
+    ('7/21~<br>(그룹분리)', '지정(25-07-21~)', '지정_손익(25-07-21~)'),
+    ('10/29~<br>(3기시작)', '지정(25-10-29~)', '지정_손익(25-10-29~)'),
+    ('5/18~<br>(4기시작)',  '지정(26-05-18~)', '지정_손익(26-05-18~)'),
+    ('누적',             '누적수익률(%)',    '평가손익'),
+]
+
 if perf_row is None:
     st.warning(f"performance_summary 시트에서 '{perf_label}' 행을 찾을 수 없습니다")
 else:
-    short_cols = [
-        '1일', 'WTD(이번주)', 'W-1(저번주)', 'W-2(2주전)', 'W-3(3주전)',
-        'MTD(이번달)', 'M-1(지난달)', 'M-2(2달전)', 'YTD',
-    ]
-
     short_data = []
-    for c in short_cols:
-        v = get_perf_pct(c)
+    for display_label, pct_col, _pl_col in UNIFIED_PERIODS:
+        v = get_perf_pct(pct_col)
         short_data.append({
-            '기간': c,
+            '기간': display_label,
             '수익률': v if v is not None else 0,
             '있음': v is not None,
         })
@@ -2070,83 +2089,62 @@ else:
 
 # ---------------------------------------------------------
 # [블록 3.5] 단기 손익 (KRW) — 수익률 차트의 자매
-# 이번달/지난달/2달전 + YTD + 5/14~ + 7/21~ + 누적
+# 단기 수익률 차트와 동일한 13컬럼 set (UNIFIED_PERIODS) 사용
 # ---------------------------------------------------------
 st.subheader("💰 단기 손익")
 
 if perf_row is None:
     st.info("손익 데이터 없음 (perf_row 못 찾음)")
 else:
-    # 사용 가능한 월 컬럼 검색
-    month_cols_pl = sorted([c for c in df_perf.columns if re.match(r'^\d{4}-\d{2}$', str(c))])
-
     pl_labels = []
     pl_values = []
+    pl_has_data = []
 
-    # 이번달 / 지난달 / 2달전
-    if month_cols_pl:
-        for offset, label_prefix in [(-1, '이번달'), (-2, '지난달'), (-3, '2달전')]:
-            if abs(offset) <= len(month_cols_pl):
-                mcol = month_cols_pl[offset]
-                v = get_perf_raw(f'손익_{mcol}')
-                yymm = mcol[2:].replace('-', '/')  # '26/04'
-                pl_labels.append(f'{label_prefix}<br>({yymm})')
-                pl_values.append(v if v is not None else 0)
+    for display_label, _pct_col, pl_col in UNIFIED_PERIODS:
+        if pl_col == '평가손익':
+            # 누적 손익은 평가손익 + total_pl fallback
+            v = get_perf_raw('평가손익')
+            if v is None:
+                v = total_pl
+        else:
+            v = get_perf_raw(pl_col)
 
-    # YTD (올해 월별 합)
-    if month_cols_pl:
-        current_month = month_cols_pl[-1]
-        current_year = current_month.split('-')[0]
-        ytd_months = [c for c in month_cols_pl if c.startswith(current_year)]
-        ytd_total = sum((get_perf_raw(f'손익_{m}') or 0) for m in ytd_months)
-        pl_labels.append(f'YTD<br>({current_year})')
-        pl_values.append(ytd_total)
-
-    # 5/14~ (멘토 2기 inception)
-    pl_5_14 = get_perf_raw('지정_손익(25-05-14~)')
-    if pl_5_14 is not None:
-        pl_labels.append('5/14~')
-        pl_values.append(pl_5_14)
-
-    # 7/21~ (HS inception)
-    pl_7_21 = get_perf_raw('지정_손익(25-07-21~)')
-    if pl_7_21 is not None:
-        pl_labels.append('7/21~')
-        pl_values.append(pl_7_21)
-
-    # 10/29~ (멘토 3기 inception)
-    pl_10_29 = get_perf_raw('지정_손익(25-10-29~)')
-    if pl_10_29 is not None:
-        pl_labels.append('10/29~')
-        pl_values.append(pl_10_29)
-
-    # 누적 (전체기간)
-    cumulative_pl = get_perf_raw('평가손익')
-    if cumulative_pl is None:
-        cumulative_pl = total_pl  # fallback: dashboard 계산값
-    pl_labels.append('누적')
-    pl_values.append(cumulative_pl)
+        pl_labels.append(display_label)
+        pl_values.append(v if v is not None else 0)
+        pl_has_data.append(v is not None)
 
     if not pl_labels:
         st.info("표시할 손익 데이터 없음")
     else:
-        # 색상: 양수=초록, 음수=빨강
-        pl_colors = ['#2e7d32' if v >= 0 else '#c62828' for v in pl_values]
+        # 색상: 데이터 없음=회색, 양수=초록, 음수=빨강
+        pl_colors = []
+        for v, has in zip(pl_values, pl_has_data):
+            if not has:
+                pl_colors.append('#bdbdbd')
+            elif v >= 0:
+                pl_colors.append('#2e7d32')
+            else:
+                pl_colors.append('#c62828')
+
+        pl_text = [
+            f'₩{v:+,.0f}' if has else '-'
+            for v, has in zip(pl_values, pl_has_data)
+        ]
 
         fig_pl_chart = go.Figure(go.Bar(
             x=pl_labels,
             y=pl_values,
             marker_color=pl_colors,
-            text=[f'₩{v:+,.0f}' for v in pl_values],
+            text=pl_text,
             textposition='outside',
-            textfont=dict(size=12, color='#222', family='sans-serif'),
+            textfont=dict(size=11, color='#222', family='sans-serif'),
             cliponaxis=False,
             hovertemplate='<b>%{x}</b><br>%{text}<extra></extra>',
         ))
         fig_pl_chart.add_hline(y=0, line_color='gray', line_width=1)
         fig_pl_chart.update_layout(
             height=420,
-            margin=dict(l=40, r=20, t=20, b=70),
+            margin=dict(l=40, r=20, t=20, b=80),
             showlegend=False,
             font=dict(size=14, family='sans-serif'),
             yaxis=dict(
@@ -2154,7 +2152,7 @@ else:
                 tickfont=dict(size=11),
                 gridcolor='#eeeeee',
             ),
-            xaxis=dict(tickfont=dict(size=12)),
+            xaxis=dict(tickfont=dict(size=11)),
             bargap=0.3,
             plot_bgcolor='white',
         )
