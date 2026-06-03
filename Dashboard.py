@@ -2183,9 +2183,32 @@ else:
                 st.info(f"{label} 데이터 없음")
                 return
 
+            # 최신이 왼쪽으로 (사용자 요청): 리스트 reverse
+            period_cols = list(reversed(period_cols))
+
             twr_vals = [get_perf_pct(c) if get_perf_pct(c) is not None else 0 for c in period_cols]
             mwr_vals = [get_perf_pct(f'MWR_{c}') if get_perf_pct(f'MWR_{c}') is not None else 0 for c in period_cols]
             pl_vals = [get_perf_raw(f'손익_{c}') if get_perf_raw(f'손익_{c}') is not None else 0 for c in period_cols]
+
+            # 짧은 라벨 — "2025-05" → "25.05", "2025-Q1" → "25.Q1"
+            def _short_label(c):
+                s = str(c)
+                if re.match(r'^\d{4}-\d{2}$', s):
+                    return f"{s[2:4]}.{s[5:7]}"
+                if re.match(r'^\d{4}-Q\d$', s):
+                    return f"{s[2:4]}.{s[5:]}"
+                return s
+            display_labels = [_short_label(c) for c in period_cols]
+
+            # 모든 월/분기 라벨 강제 표시용 공통 xaxis 설정
+            _xaxis_common = dict(
+                tickfont=dict(size=11),
+                tickangle=0,
+                tickmode='array',
+                tickvals=period_cols,
+                ticktext=display_labels,
+                type='category',
+            )
 
             # 차트 1: TWR + MWR 그룹 막대
             fig_ret = go.Figure()
@@ -2217,7 +2240,7 @@ else:
                             font=dict(size=13)),
                 font=dict(size=13, family='sans-serif'),
                 yaxis=dict(title='수익률 (%)', tickfont=dict(size=11), gridcolor='#eeeeee'),
-                xaxis=dict(tickfont=dict(size=12), tickangle=-30),
+                xaxis=_xaxis_common,
                 bargap=0.2,
                 bargroupgap=0.08,
                 plot_bgcolor='white',
@@ -2243,7 +2266,7 @@ else:
                 showlegend=False,
                 font=dict(size=13, family='sans-serif'),
                 yaxis=dict(title='손익 (₩)', tickfont=dict(size=11), gridcolor='#eeeeee'),
-                xaxis=dict(tickfont=dict(size=12), tickangle=-30),
+                xaxis=_xaxis_common,
                 bargap=0.3,
                 plot_bgcolor='white',
             )
