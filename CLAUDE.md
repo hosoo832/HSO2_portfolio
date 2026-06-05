@@ -59,7 +59,7 @@ PENSION_ACCS = ['220914426167', '717190227129']  # HS 포폴 안의 퇴직연금
 ### Daily Market Cron
 | 파일 | 역할 |
 |---|---|
-| `update_market_data.py` | `daily-market.yml` 워크플로가 호출. market_data 시트에 한 행 append |
+| `update_market_data.py` | `daily-market.yml` 워크플로가 호출. market_data 시트에 한 행 append + **같은 행을 `ma_alerts` 파일 `market` 탭에 세로(지표\|값) 미러** (06:30 브리핑 A섹션 소스 — 거래내역 파일은 커넥터로 통째 읽기 불가해서) |
 | `ma_touch.py` | `daily-market.yml` 워크플로 2번째 스텝. 보유종목(dashboard_data, yf_ticker 재활용) 이평선 일5/일10/주5/주10/월5 터치 감지 → **별도 스프레드시트 `ma_alerts`** 통째 덮어씀. 터치 = 직전 거래일 저가~고가에 이평선 포함. 한국 종목 yfinance 부실 시 Naver fchart 폴백. 06:30 브리핑 스케줄 작업이 Drive 커넥터로 읽음 |
 | `backfill_market_data.py` | 과거 시장 데이터 일괄 백필 (수동 실행, 시트 통째로 덮어씀) |
 | `ecos_helpers.py` | ECOS API 헬퍼 (KR 10Y, KOSPI/KOSDAQ 거래대금) |
@@ -106,7 +106,7 @@ PENSION_ACCS = ['220914426167', '717190227129']  # HS 포폴 안의 퇴직연금
 | 시트 | 갱신 시점 | 설명 |
 |---|---|---|
 | `market_data` | 매일 06:10 KST | 시장 지표 일별 누적 (39 컬럼: KOSPI/KOSDAQ/SP500/NASDAQ/NIKKEI/Shanghai/DAX/환율/채권/원자재/VIX/BTC/거래대금/KR10Y 등) |
-| `ma_alerts` (**별도 파일**) | 매일 06:10 KST | 보유종목 이평선 터치 결과 (덮어씀). 별도 파일인 이유: Cowork Drive 커넥터가 `거래내역` 통째 읽기엔 너무 커서. 서비스계정에 편집자 공유 필수 |
+| `ma_alerts` (**별도 파일**) | 매일 06:10 KST | 1번 탭: 보유종목 이평선 터치 결과 (덮어씀, ma_touch.py). **`market` 탭: market_data 최신 행 세로 미러** (update_market_data.py — 브리핑 A섹션 소스). 별도 파일인 이유: Cowork Drive 커넥터가 `거래내역` 통째 읽기엔 너무 커서. 서비스계정에 편집자 공유 필수 |
 
 ### Dashboard 가 생성/갱신하는 시트
 | 시트 | 갱신 시점 | 설명 |
@@ -575,7 +575,7 @@ main.py 가 시트 열을 **번호로 하드코딩**해서 씀 (W=23 … AD=30).
 ---
 
 > 📝 이 문서는 살아있어. 새 결정 / 기능 추가 / quirks 발견되면 이 파일도 같이 업데이트하면 좋아.
-> 마지막 갱신: **2026-06-05** (ma_touch.py — 이평선 터치 감지 + ma_alerts 시트 + 브리핑 연동)
+> 마지막 갱신: **2026-06-05** (ma_alerts `market` 탭 미러 — 브리핑 A섹션 정확도 fix)
 >
 > ### 갱신 이력
 > - 2026-05-11: 작전 일지 시스템 + Cowork 프로젝트 분리
@@ -586,3 +586,4 @@ main.py 가 시트 열을 **번호로 하드코딩**해서 씀 (W=23 … AD=30).
 > - 2026-05-26: **raw_체결 시스템** — 국내 보통매매 매수/매도를 체결내역(raw_체결 시트) 기반으로 전환. 소스 분리(매매=raw_체결, 그 외=raw_domestic, dedup 불필요), `transform_chey` 신설, `transform_domestic` 에 `exclude_market_trades` 옵션, 분할체결 통합, 수수료 추정, 거래내역↔체결 감사. main.py(현금계산 포함)·Dashboard 작전일지(직전 영업일 import) 반영. `migrate_chey.py`/`verify_chey.py` 추가. 설계결정 #11. **(2026-05-28에 폐기 — #12 참조)**
 > - 2026-05-28: **D 옵션 — 단일 raw_domestic 통합** (설계결정 #12). raw_체결, raw_체결_키움 시트 폐기. 사용자가 raw_domestic 에 Z(체결 Y/N), AA(체결일=WORKDAY 수식) 컬럼 추가. 체결+거래내역 모두 raw_domestic 에 paste, `_apply_chey_dedup` 가 자동 dedup(거래내역 우선, 분할체결은 합산 유지). main.py STEP 1·3·6 단순화. Dashboard 작전일지(직전 영업일 import 포함) raw_domestic 하나만 읽음. `transform_chey`/`flatten_kiwoom_chey`/`absorb_kiwoom_chey` 등 dead code화. 워크플로 B 한 시트로 통합.
 > - 2026-06-05: **ma_touch.py — 이평선 터치 알림**. daily-market.yml 2번째 스텝(`if: always()`). dashboard_data 보유종목(yf_ticker 재활용) → yfinance 일봉 1y (+한국 종목 Naver fchart 폴백) → 일5/일10/주5/주10/월5 계산(주·월봉은 진행 중 캔들 포함) → 직전 거래일 저가~고가에 포함 시 터치 → **별도 스프레드시트 `ma_alerts`** 덮어씀(터치 종목 우선 정렬, 이격% 포함). 06:30 브리핑 스케줄 작업에 "📐 이평선 터치" 섹션 추가 — Drive 커넥터로 ma_alerts 읽음(거래내역 파일은 커서 통째 읽기 불가). 사전 준비: 사용자가 `ma_alerts` 시트 생성 + 서비스계정 편집자 공유.
+> - 2026-06-05 (오전): **ma_alerts `market` 탭 미러** — 6/5 첫 브리핑 A섹션이 WebSearch 기반이라 니케이 등 지표 부정확 사고. fix: update_market_data.py 에 STEP 4 신설 — market_data append 직후 같은 행을 ma_alerts `market` 탭에 세로(지표|값) 형식으로 미러 (`mirror_to_alerts`, 실패해도 cron 계속 진행). 브리핑 스케줄 작업 A섹션 1차 소스를 market 탭으로 변경 — WebSearch 는 fallback only. 이로써 브리핑 A섹션 = Dashboard 섹션 A 와 동일 파이프라인 값.
