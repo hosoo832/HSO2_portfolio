@@ -98,6 +98,80 @@ def get_naver_index_previous_close(code='KOSPI'):
         print(f"     [Naver] {code} 예외: {e}")
         return (None, None, None)
 
+
+# 심볼 매핑: yfinance ticker → Naver 월드인덱스 심볼
+# (니케이/상하이/DAX 는 yfinance 가 이른 아침 KST 풀에서 EOD 를 늦게 줄 때 fallback)
+NAVER_WORLD_SYMBOLS = {
+    '^N225': '.N225',       # 니케이225
+    '000001.SS': '.SSEC',   # 상하이종합
+    '^GDAXI': '.GDAXI',     # 독일 DAX
+}
+
+
+def get_naver_world_index_previous_close(symbol):
+    """Naver 월드인덱스 API 로 해외 인덱스 '직전 거래일 종가' 가져옴.
+
+    용도: yfinance 가 니케이(^N225)/상하이(000001.SS)/DAX(^GDAXI) 의 EOD 를
+          이른 아침(KST) 배치 풀에서 한 박자 늦게 줄 때 fallback.
+          KOSPI/KOSDAQ 의 get_naver_index_previous_close 해외판.
+
+    ⚠️ Quirk #10 교훈: Naver 의 chg 부호(direction code)는 신뢰 안 함.
+       price 만 호출부에 주입하고, chg 는 yfinance 시계열로 자동 계산.
+
+    Args:
+        symbol: Naver 월드인덱스 심볼 (예: '.N225', '.SSEC', '.GDAXI')
+
+    Returns:
+        (price, chg_pct, source_date) — 실패 시 (None, None, None).
+        price 만 신뢰. chg_pct 는 참고용(미사용 권장).
+    """
+    candidates = [
+        f"https://api.stock.naver.com/index/{symbol}/basic",
+        f"https://m.stock.naver.com/api/index/{symbol}/basic",
+    ]
+    headers = {'User-Agent': 'Mozilla/5.0'}
+    for url in candidates:
+        try:
+            r = requests.get(url, headers=headers, timeout=10)
+            if r.status_code != 200:
+                continue
+            d = r.json()
+            close_val = float(str(d.get('closePrice', '0')).replace(',', ''))
+            if close_val <= 0:
+                continue
+            # 날짜 — localTradedAt(ISO) 또는 tradeDate(YYYYMMDD) 대응
+            raw_date = d.get('localTradedAt') or d.get('tradeDate') or ''
+            source_date = None
+            if raw_date:
+                try:
+                    source_date = datetime.fromisoformat(
+                        str(raw_date).replace('Z', '+00:00')
+                    ).date().strftime('%Y-%m-%d')
+                except Exception:
+                    try:
+                        source_date = datetime.strptime(
+                            str(raw_date)[:8], '%Y%m%d'
+                        ).strftime('%Y-%m-%d')
+                    except Exception:
+                        source_date = None
+            # chg (참고용 — 부호 미신뢰, 미사용 권장)
+            chg_pct = None
+            try:
+                diff = float(str(d.get('compareToPreviousClosePrice', '0')).replace(',', ''))
+                direction = d.get('compareToPreviousPrice', {}).get('code', '3')
+                sign = 1 if direction == '2' else (-1 if direction == '5' else 0)
+                base = close_val - sign * diff
+                if base != 0:
+                    chg_pct = (sign * diff) / base * 100.0
+            except Exception:
+                chg_pct = None
+            return (close_val, chg_pct, source_date)
+        except Exception as e:
+            print(f"     [Naver World] {symbol} 예외 ({url}): {e}")
+            continue
+    return (None, None, None)
+
+
 # --- [엔진 1] 거래소 자동 탐지 (v35) ---
 def auto_fill_exchange_info(df_master):
     """
@@ -538,8 +612,9 @@ def fetch_daily_market_data():
     
     print("  [Core 5-A] yfinance 데이터 수집 중...")
     try:
-        # [패치 2 적용 확인] 사용자 코드에 이미 period="5d"가 적용되어 있어 그대로 유지
-        data = yf.download(tickers=yf_tickers, period="5d", interval="1d", progress=False)
+        # period="10d" — 캘린더 5일은 주말/공휴일 끼면 유효 거래일 bar 가 2~3개로
+        # 쪼그라들어 chg 계산이 stale 해질 수 있음. 10일로 ≥5 거래일 확보 (꼬리만 읽으므로 무해).
+        data = yf.download(tickers=yf_tickers, period="10d", interval="1d", progress=False)
 
         if data.empty or len(data) < 2:
             print("  [!!!] yfinance 데이터 부족. 빈 리스트 반환.")
@@ -634,6 +709,30 @@ def fetch_daily_market_data():
                     print(f"     [Naver fallback] {yesterday_str} 행 신규 생성 + KOSPI/KOSDAQ price 주입 (chg 는 yfinance 자동)")
         except Exception as e:
             print(f"     [Naver fallback] 보충 중 오류 (무시): {e}")
+
+        # ⚠️ 해외 인덱스(니케이/상하이/DAX) Naver fallback — '하루 밀림' 버그 fix
+        # yfinance 가 이른 아침(KST) 배치 풀에서 해외 EOD 를 한 박자 늦게 주면,
+        # 필터 후 마지막 행(어제)의 해당 셀이 NaN 으로 비어 → get_val 의 dropna 가
+        # 그제 값을 마지막으로 집어 '하루 밀린' 종가/등락이 시트에 들어감.
+        # KOSPI/KOSDAQ 와 달리 해외 인덱스엔 보강이 없었던 게 원인 → 동일하게 price 주입.
+        # (chg 는 아래 get_val 시계열 로직이 어제 vs 그제로 자동 계산 — Naver 부호 미신뢰, Quirk #10)
+        # 마지막 행 셀이 NaN 일 때만 손댐 → 정상 수신 시 동작 0 (무해).
+        try:
+            if len(data) >= 1:
+                latest_date = data.index[-1]
+                for yf_tkr, naver_sym in NAVER_WORLD_SYMBOLS.items():
+                    col = ('Close', yf_tkr)
+                    if col not in data.columns:
+                        continue
+                    if pd.isna(data.loc[latest_date, col]):
+                        n_price, _, n_date = get_naver_world_index_previous_close(naver_sym)
+                        if n_price is not None and n_price > 0:
+                            data.loc[latest_date, col] = n_price
+                            print(f"     [Naver World fallback] {yf_tkr} "
+                                  f"{latest_date.strftime('%Y-%m-%d')} 종가 = {n_price:,.2f} "
+                                  f"(Naver date={n_date}, chg 는 yfinance 자동 계산)")
+        except Exception as e:
+            print(f"     [Naver World fallback] 해외 인덱스 보충 중 오류 (무시): {e}")
 
         latest_row = data.iloc[-1]
         
