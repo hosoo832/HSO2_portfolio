@@ -477,6 +477,16 @@ main.py 가 시트 열을 **번호로 하드코딩**해서 씀 (W=23 … AD=30).
 - 화면 정리는 **열 숨기기**로 (위치 안 바뀜 → 안전). 헬퍼 열 AA(Long_weight)·AC(risk_weight) 숨기면 Z·AB·AD 가 붙어 보임.
 - 진짜 열 순서를 바꾸려면 main.py 를 열 번호 대신 **헤더 이름 기반**으로 리팩토링해야 함 (미완 — 백로그).
 
+### 16. 니케이·상하이·DAX 하루 밀림 — Naver 월드인덱스 fallback (2026-06-09)
+`fetch_daily_market_data()` 가 이른 아침(06:10 KST) cron 에서 yfinance 배치(`yf.download`)를 받을 때, **야후가 전일 아시아/유럽 EOD 일봉을 한 박자 늦게 줌** → 필터 후 마지막 행(어제)의 해당 셀이 NaN → `get_val` 의 `dropna().iloc[-1]` 이 **그제 값**을 집어 종가·등락이 하루 밀림.
+- **원인**: KOSPI/KOSDAQ 는 진작에 Naver fallback(`get_naver_index_previous_close`)으로 메꿔놨는데, **해외 인덱스(^N225·000001.SS·^GDAXI)엔 보강이 없었음**.
+- **fix (2026-06-09)**:
+  1. `get_naver_world_index_previous_close(symbol)` 신설 — KOSPI 헬퍼의 해외판. `NAVER_WORLD_SYMBOLS = {'^N225':'.N225','000001.SS':'.SSEC','^GDAXI':'.GDAXI'}`.
+  2. KOSPI fallback 블록 직후, 필터된 frame 의 **마지막 행 셀이 NaN 일 때만** Naver 종가 주입. chg 는 `get_val` 시계열(어제 vs 그제)이 자동 계산 — **Naver 부호는 안 씀**(Quirk #10 준수, price-only).
+  3. `period="5d"` → `"10d"` (주말/공휴일 끼면 유효 거래일 bar 2~3개로 쪼그라드는 것 방지).
+- **안전성**: 정상 수신(셀에 값) 시 동작 0. 전부 try/except → Naver 실패해도 기존과 동일(무해).
+- ⚠️ **엔드포인트 검증 필요 (PENDING)**: 샌드박스 차단으로 Naver 월드인덱스 API(`api.stock.naver.com/index/{symbol}/basic` 등) 응답 모양을 라이브 확인 못 함. 도메스틱과 필드/경로 다를 수 있음. 로컬에서 `python -c "import finance_core as f; print(f.get_naver_world_index_previous_close('.N225'))"` 로 (종가, _, 날짜) 정상 반환 확인 후 신뢰할 것. None 나오면 심볼/URL 재조정 필요.
+
 ---
 
 ## 🚀 Git / 배포 정보
@@ -575,7 +585,7 @@ main.py 가 시트 열을 **번호로 하드코딩**해서 씀 (W=23 … AD=30).
 ---
 
 > 📝 이 문서는 살아있어. 새 결정 / 기능 추가 / quirks 발견되면 이 파일도 같이 업데이트하면 좋아.
-> 마지막 갱신: **2026-06-05** (ma_alerts `market` 탭 미러 — 브리핑 A섹션 정확도 fix)
+> 마지막 갱신: **2026-06-09** (니케이·상하이·DAX 하루 밀림 — Naver 월드인덱스 fallback, Quirk #16)
 >
 > ### 갱신 이력
 > - 2026-05-11: 작전 일지 시스템 + Cowork 프로젝트 분리
@@ -587,3 +597,4 @@ main.py 가 시트 열을 **번호로 하드코딩**해서 씀 (W=23 … AD=30).
 > - 2026-05-28: **D 옵션 — 단일 raw_domestic 통합** (설계결정 #12). raw_체결, raw_체결_키움 시트 폐기. 사용자가 raw_domestic 에 Z(체결 Y/N), AA(체결일=WORKDAY 수식) 컬럼 추가. 체결+거래내역 모두 raw_domestic 에 paste, `_apply_chey_dedup` 가 자동 dedup(거래내역 우선, 분할체결은 합산 유지). main.py STEP 1·3·6 단순화. Dashboard 작전일지(직전 영업일 import 포함) raw_domestic 하나만 읽음. `transform_chey`/`flatten_kiwoom_chey`/`absorb_kiwoom_chey` 등 dead code화. 워크플로 B 한 시트로 통합.
 > - 2026-06-05: **ma_touch.py — 이평선 터치 알림**. daily-market.yml 2번째 스텝(`if: always()`). dashboard_data 보유종목(yf_ticker 재활용) → yfinance 일봉 1y (+한국 종목 Naver fchart 폴백) → 일5/일10/주5/주10/월5 계산(주·월봉은 진행 중 캔들 포함) → 직전 거래일 저가~고가에 포함 시 터치 → **별도 스프레드시트 `ma_alerts`** 덮어씀(터치 종목 우선 정렬, 이격% 포함). 06:30 브리핑 스케줄 작업에 "📐 이평선 터치" 섹션 추가 — Drive 커넥터로 ma_alerts 읽음(거래내역 파일은 커서 통째 읽기 불가). 사전 준비: 사용자가 `ma_alerts` 시트 생성 + 서비스계정 편집자 공유.
 > - 2026-06-05 (오전): **ma_alerts `market` 탭 미러** — 6/5 첫 브리핑 A섹션이 WebSearch 기반이라 니케이 등 지표 부정확 사고. fix: update_market_data.py 에 STEP 4 신설 — market_data append 직후 같은 행을 ma_alerts `market` 탭에 세로(지표|값) 형식으로 미러 (`mirror_to_alerts`, 실패해도 cron 계속 진행). 브리핑 스케줄 작업 A섹션 1차 소스를 market 탭으로 변경 — WebSearch 는 fallback only. 이로써 브리핑 A섹션 = Dashboard 섹션 A 와 동일 파이프라인 값.
+> - 2026-06-09: **니케이·상하이·DAX 하루 밀림 fix** (Quirk #16). yfinance 가 이른 아침 cron 에서 해외 EOD 를 한 박자 늦게 줘 마지막 행 셀 NaN → `get_val` 이 그제 값 집음. KOSPI/KOSDAQ 와 달리 해외 인덱스엔 Naver fallback 이 없던 게 원인. `finance_core.get_naver_world_index_previous_close()` 신설(KOSPI 헬퍼 해외판) + 마지막 행 NaN 일 때만 price 주입(chg 는 yfinance 자동, Naver 부호 미신뢰 — Quirk #10), `period` 5d→10d. ⚠️ Naver 월드인덱스 엔드포인트 라이브 검증 PENDING — 로컬 1줄 테스트로 확인 후 신뢰.
