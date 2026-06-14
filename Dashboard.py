@@ -279,7 +279,7 @@ with st.sidebar:
 
     view = st.radio(
         "뷰 선택",
-        ["전체", "멘토 포폴", "HS 포폴", "💼 장중 실시간", "📓 작전 일지"],
+        ["전체", "멘토 포폴", "HS 포폴", "💼 장중 실시간", "📓 작전 일지", "🎯 은퇴 로드맵"],
         index=0,
     )
 
@@ -383,6 +383,16 @@ for col in ['market_value_krw', 'unrealized_pl_krw', 'realized_pl_krw',
 # 그룹 매핑
 df_dashboard['account_clean'] = df_dashboard['account'].apply(clean_account)
 df_dashboard['group_name'] = df_dashboard['account_clean'].map(ACCOUNT_GROUPS).fillna('기타')
+
+# =========================================================
+# [은퇴 로드맵 뷰] — 목표 은퇴자산 vs 현재 페이스 (독립 모듈)
+# - 전세 유지 / 반전세 전환 두 버전, 필요수익률·도달나이 비교
+# - 로직 전부 retirement_roadmap.py 에 격리 (Dashboard 본체 영향 0)
+# =========================================================
+if view == "🎯 은퇴 로드맵":
+    import retirement_roadmap
+    retirement_roadmap.render(df_dashboard, df_perf, now_kst)
+    st.stop()
 
 # =========================================================
 # [작전 일지 뷰] — 매일 시장 진단 + 매매 기록 + 회고
