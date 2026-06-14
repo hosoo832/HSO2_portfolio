@@ -32,8 +32,12 @@ DEFAULTS = dict(
     infl=2.5,           # 물가상승률 %
     exp_return=12.0,    # 기대 연수익률 (명목) %
     contrib=0.0,        # 연 추가납입 (억)
+    jan1_jeonse=8.1,    # 올해 연초(1/1) 전세보증금
+    jan1_stock=3.0,     # 올해 연초 주식자산
+    jan1_auction=2.0,   # 올해 연초 경매
 )
 INCEPTION = date(2025, 5, 14)  # 실적 TWR 연환산 기준일 (멘토 2기 시작)
+KPI_MIN, KPI_AVG, KPI_MAX = 10.0, 15.0, 20.0  # 호섭 연수익률 목표 (명목 %)
 
 
 # =========================================================
@@ -185,6 +189,15 @@ def render(df_dashboard=None, df_perf=None, now_kst=None):
         with cc2:
             travel_y = st.number_input("여행비 (만원/년)", 0, 5000, d["travel_y"], 100)
 
+        st.markdown("**📅 올해 진척 비교용 — 연초(1/1) 순자산**")
+        j1, j2, j3 = st.columns(3)
+        with j1:
+            jan1_je = st.number_input("연초 전세 (억)", 0.0, 15.0, d["jan1_jeonse"], 0.1)
+        with j2:
+            jan1_st = st.number_input("연초 주식 (억)", 0.0, 50.0, d["jan1_stock"], 0.1)
+        with j3:
+            jan1_au = st.number_input("연초 경매 (억)", 0.0, 15.0, d["jan1_auction"], 0.1)
+
     # ──────────────────────────────────────────────
     # 계산
     # ──────────────────────────────────────────────
@@ -218,6 +231,14 @@ def render(df_dashboard=None, df_perf=None, now_kst=None):
     need_50 = need_nom(yrs_50)
     need_55 = need_nom(yrs_55)
 
+    # 올해 진척 (YTD) — 순자산은 시나리오 무관 (전세 = 보증금 + 전환차액)
+    jan1_total = jan1_je + jan1_st + jan1_au
+    now_total = jeonse + invest + auction
+    _today = (now_kst() if now_kst else datetime.now()).date()
+    _elapsed = max((_today - date(_today.year, 1, 1)).days / 365.25, 0.05)
+    ytd_chg = (now_total / jan1_total - 1) if jan1_total > 0 else 0.0
+    ytd_ann = ((1 + ytd_chg) ** (1 / _elapsed) - 1) if ytd_chg > -1 else 0.0
+
     # ──────────────────────────────────────────────
     # 결과 요약
     # ──────────────────────────────────────────────
@@ -249,6 +270,52 @@ def render(df_dashboard=None, df_perf=None, now_kst=None):
             f"50세까지 누적 **{rent_y*yrs_50:.1f}억** / 55세까지 **{rent_y*yrs_55:.1f}억**. "
             + ("(투자에서 인출 반영 중)" if rent_from_invest else "(근로소득 충당 가정 — 투자버킷 영향 없음)")
         )
+
+    # ──────────────────────────────────────────────
+    # 올해 진척 (YTD) — 지금 페이스 점검
+    # ──────────────────────────────────────────────
+    st.markdown("### 📅 올해 진척 (YTD) — 지금 잘하고 있나?")
+    pace = need_55 if need_55 else need_50
+    y1, y2, y3, y4 = st.columns(4)
+    y1.metric("연초 순자산 (1/1)", f"{jan1_total:.1f}억")
+    y2.metric("현재 순자산", f"{now_total:.1f}억", delta=f"{now_total - jan1_total:+.1f}억")
+    y3.metric("YTD 성장률", f"{ytd_chg*100:+.1f}%",
+              delta=f"연율 환산 {ytd_ann*100:.0f}%", delta_color="off")
+    y4.metric("목표 필요수익률 (55세)", f"{pace*100:.1f}%/년" if pace else "-",
+              help="이 속도 이상이면 55세 목표 궤도 위")
+
+    # (1) 은퇴 목표 페이스 판정 — 순자산 전체 기준
+    if pace:
+        if ytd_ann >= pace:
+            st.success(
+                f"🟢 올해 순자산 연율 **{ytd_ann*100:.0f}%** ≥ 목표 필요 **{pace*100:.1f}%** "
+                "— 목표 궤도 위에 있습니다."
+            )
+        else:
+            gap_amt = jan1_total * (1 + pace) ** _elapsed - now_total
+            st.warning(
+                f"🟡 올해 순자산 연율 **{ytd_ann*100:.0f}%** < 목표 필요 **{pace*100:.1f}%** "
+                f"— 목표 궤도까지 약 **{gap_amt:.1f}억** 부족."
+            )
+    st.caption(
+        "⚠️ 순자산 성장엔 경매 평가차익 등 **일회성**이 섞여 연율이 과장될 수 있음. "
+        "순수 운용 실력은 아래 '주식 TWR' 로 판단하세요."
+    )
+
+    # (2) 운용 실력 — 주식 TWR vs KPI 목표
+    if twr_ann is not None:
+        if twr_ann >= KPI_AVG:
+            tag = f"🟢 평균목표({KPI_AVG:.0f}%) 초과 — 아주 잘하고 있음"
+        elif twr_ann >= KPI_MIN:
+            tag = f"🟡 최소목표({KPI_MIN:.0f}%) 달성 — 평균({KPI_AVG:.0f}%)까진 더"
+        else:
+            tag = f"🔴 최소목표({KPI_MIN:.0f}%) 미달 — 분발 필요"
+        st.markdown(
+            f"**📈 운용 실력 (주식 TWR 연환산): {twr_ann:.1f}%** "
+            f"— KPI {KPI_MIN:.0f}/{KPI_AVG:.0f}/{KPI_MAX:.0f}% 중 {tag}"
+        )
+    else:
+        st.caption("주식 TWR 자동연동 실패 — performance_summary '전체' 행을 확인하세요.")
 
     # ──────────────────────────────────────────────
     # 자산 궤적 차트
