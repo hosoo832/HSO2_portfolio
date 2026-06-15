@@ -1,7 +1,7 @@
 # retirement_roadmap.py — 호섭님 은퇴 로드맵 뷰
 #
 # Dashboard.py 의 "🎯 은퇴 로드맵" 뷰가 호출하는 독립 모듈.
-# 목표 은퇴자산까지 매년 필요한 수익률 + 현재 페이스로 몇 살에 닿는지 비교.
+# 목표 은퇴자산까지 매년 필요한 수익률 + 올해 YTD 실제 페이스로 얼마나 잘하고 있는지 비교.
 # 전세 유지 vs 반전세 전환 두 버전을 토글/표로 동시 비교.
 #
 # ── 핵심 모델 (실질 = 오늘 구매력 기준, 모든 금액 '억원') ──
@@ -9,6 +9,7 @@
 #   - 투자 버킷: 주식 + 경매(선택) + 반전세 전환차액. 매년 실질수익률로 복리 + 추가납입.
 #   - 목표 총자산(오늘) = 과천 아파트값 + (생활비 + 여행비) / 안전인출률(SWR)
 #   - 명목수익률 → 실질수익률: (1+명목)/(1+물가) - 1
+#   - 필요수익률 = 투자버킷이 목표 도달에 매년 내야 하는 명목 CAGR (전세는 안 굴러감)
 #
 # Dashboard.py 와의 결합: render(df_dashboard, df_perf, now_kst) 한 함수만 노출.
 # df 인자는 optional — 없으면 수동입력 기본값으로 동작(독립 실행/테스트 가능).
@@ -30,7 +31,7 @@ DEFAULTS = dict(
     travel_y=1750,      # 여행비 (만원/년, 1500~2000 중간값)
     swr=4.0,            # 안전인출률 %
     infl=2.5,           # 물가상승률 %
-    exp_return=12.0,    # 기대 연수익률 (명목) %
+    exp_return=12.0,    # 차트 시뮬레이션 수익률 (명목) %
     contrib=0.0,        # 연 추가납입 (억)
     jan1_jeonse=8.1,    # 올해 연초(1/1) 전세보증금
     jan1_stock=3.0,     # 올해 연초 주식자산
@@ -61,7 +62,7 @@ def project_path(invest0, resid0, r_real, years, contrib=0.0, outflow=0.0):
 
 
 def required_cagr(target, invest0, resid0, years, contrib=0.0, outflow=0.0):
-    """목표도달에 필요한 실질 CAGR(소수)을 이분법으로 역산."""
+    """목표도달에 필요한 실질 CAGR(소수)을 이분법으로 역산 (투자버킷 기준)."""
     if years is None or years <= 0:
         return float("nan")
     lo, hi = -0.9, 2.0
@@ -73,6 +74,14 @@ def required_cagr(target, invest0, resid0, years, contrib=0.0, outflow=0.0):
         else:
             hi = mid
     return (lo + hi) / 2
+
+
+def need_nominal(target, invest0, resid0, years, infl_pct, contrib=0.0, outflow=0.0):
+    """목표도달에 필요한 명목 연수익률(소수). years<=0 이면 None."""
+    if years is None or years <= 0:
+        return None
+    rr = required_cagr(target, invest0, resid0, years, contrib, outflow)
+    return (1 + rr) * (1 + infl_pct / 100) - 1
 
 
 def reach_age(path, target, start_age):
@@ -118,8 +127,8 @@ def render(df_dashboard=None, df_perf=None, now_kst=None):
     d = DEFAULTS
     st.title("🎯 은퇴 로드맵")
     st.caption(
-        "목표 은퇴자산까지 **매년 얼마의 수익률**이 필요한지, 현재 페이스로 **몇 살에** 닿는지. "
-        "전세 유지 vs 반전세 전환 두 버전 비교. (모든 금액 '억원', **오늘 구매력** 기준)"
+        "목표 은퇴자산까지 **매년 얼마의 수익률**이 필요한지, **올해 내 실제 페이스가 그 목표를 넘고 있는지** 비교. "
+        "전세 유지 vs 반전세 전환 두 버전. (모든 금액 '억원', **오늘 구매력** 기준)"
     )
 
     cur_year = (now_kst() if now_kst else datetime.now()).year
@@ -167,15 +176,14 @@ def render(df_dashboard=None, df_perf=None, now_kst=None):
                 help="근로소득에서 매년 새로 투입. 0이면 순수 운용수익만으로 달성.",
             )
         with c3:
-            st.markdown("**🎯 목표 · 수익률**")
-            ret_default = round(twr_ann, 1) if (twr_ann and 0 < twr_ann < 40) else d["exp_return"]
-            exp_ret = st.slider(
-                "기대 연수익률 (명목 %)", 0.0, 20.0, float(ret_default), 0.5,
-                help=(f"현재 실적 연환산 TWR: {twr_ann:.1f}%" if twr_ann else "실적 연동 실패 — 수동 입력"),
-            )
+            st.markdown("**🎯 목표 · 가정**")
             swr = st.slider("안전인출률 SWR (%)", 2.5, 5.0, d["swr"], 0.1,
                             help="은퇴자산의 몇 %를 매년 빼 쓸지. 조기은퇴(40년+)는 3~3.5% 권장.")
             infl = st.slider("물가상승률 (%)", 1.0, 4.0, d["infl"], 0.1)
+            exp_ret = st.slider(
+                "차트 시뮬레이션 수익률 (명목 %)", 0.0, 20.0, float(d["exp_return"]), 0.5,
+                help="아래 '자산 궤적 차트' 를 그릴 때만 쓰는 가정 수익률. 결과요약·판정과는 무관.",
+            )
             rent_from_invest = False
             if scenario == "반전세 전환":
                 rent_from_invest = st.checkbox(
@@ -219,50 +227,34 @@ def render(df_dashboard=None, df_perf=None, now_kst=None):
     yrs_55 = (d["birth_year"] + 55 - 1) - cur_year
     horizon = max(yrs_55, 1) + 3
 
-    path = project_path(invest0, resid, r_real, horizon, contrib, outflow)
-    reach = reach_age(path, total_target, kor_age)
+    # 현재 시나리오 기준 필요수익률 (명목)
+    need_50 = need_nominal(total_target, invest0, resid, yrs_50, infl, contrib, outflow)
+    need_55 = need_nominal(total_target, invest0, resid, yrs_55, infl, contrib, outflow)
 
-    def need_nom(years):
-        if years is None or years <= 0:
-            return None
-        rr = required_cagr(total_target, invest0, resid, years, contrib, outflow)
-        return (1 + rr) * (1 + infl / 100) - 1   # 실질 → 명목
-
-    need_50 = need_nom(yrs_50)
-    need_55 = need_nom(yrs_55)
-
-    # 올해 진척 (YTD) — 순자산은 시나리오 무관 (전세 = 보증금 + 전환차액)
-    jan1_total = jan1_je + jan1_st + jan1_au
-    now_total = jeonse + invest + auction
+    # 올해 진척 (YTD)
+    jan1_total = jan1_je + jan1_st + jan1_au          # 연초 순자산
+    now_total = jeonse + invest + auction             # 현재 순자산 (시나리오 무관)
+    inv_jan1 = jan1_st + jan1_au                       # 연초 투자버킷 (주식+경매)
+    inv_now = invest + auction                         # 현재 투자버킷
     _today = (now_kst() if now_kst else datetime.now()).date()
     _elapsed = max((_today - date(_today.year, 1, 1)).days / 365.25, 0.05)
-    ytd_chg = (now_total / jan1_total - 1) if jan1_total > 0 else 0.0
-    ytd_ann = ((1 + ytd_chg) ** (1 / _elapsed) - 1) if ytd_chg > -1 else 0.0
+    ytd_chg = (now_total / jan1_total - 1) if jan1_total > 0 else 0.0       # 순자산 YTD
+    inv_ytd = (inv_now / inv_jan1 - 1) if inv_jan1 > 0 else 0.0             # 투자버킷 YTD
+    stock_ytd = (invest / jan1_st - 1) if jan1_st > 0 else 0.0             # 주식만 YTD
 
     # ──────────────────────────────────────────────
-    # 결과 요약
+    # 결과 요약 — 목표와 필요수익률 (가정 수익률과 무관)
     # ──────────────────────────────────────────────
     st.markdown("### 📊 결과 요약")
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("목표 총자산", f"{total_target:.1f}억",
               help=f"과천 {home:.0f}억 + 투자 {invest_target:.1f}억 (연 {cashflow*10000:,.0f}만 ÷ {swr:.1f}%)")
-    m2.metric("현재 자산", f"{resid + invest0:.1f}억",
-              help=f"거주 {resid:.1f}억 + 투자 {invest0:.1f}억")
-    m3.metric(f"필요수익률 (50세·{yrs_50}년)",
-              f"{need_50*100:.1f}%" if need_50 else "-",
-              help="추가납입·시나리오 반영, 명목 기준")
-    m4.metric("예상 도달 나이", f"{reach}세" if reach else "미도달",
-              delta=f"기대 {exp_ret:.1f}% 운용 시", delta_color="off")
-
-    # 신호등 판정 (현재 기대수익률 기준)
-    if reach and reach <= 50:
-        st.success(f"🟢 기대수익률 **{exp_ret:.1f}%**면 한국나이 **{reach}세**에 목표 도달 — 50세 은퇴 가능권!")
-    elif reach and reach <= 55:
-        st.warning(f"🟡 기대수익률 **{exp_ret:.1f}%**면 **{reach}세** 도달 — 50세는 빠듯, 55세 안에는 가능.")
-    elif reach:
-        st.error(f"🔴 기대수익률 **{exp_ret:.1f}%**면 **{reach}세**에야 도달 — 수익률/목표/은퇴시점 조정 필요.")
-    else:
-        st.error(f"🔴 기대수익률 **{exp_ret:.1f}%**로는 {kor_age + horizon}세까지도 목표 미도달.")
+    m2.metric("현재 순자산", f"{now_total:.1f}억",
+              help=f"전세 {jeonse:.1f} + 주식 {invest:.1f} + 경매 {auction:.1f}")
+    m3.metric(f"필요수익률 (50세·{yrs_50}년)", f"{need_50*100:.1f}%/년" if need_50 else "-",
+              help=f"{scenario} 기준, 투자버킷이 내야 할 명목 CAGR")
+    m4.metric(f"필요수익률 (55세·{yrs_55}년)", f"{need_55*100:.1f}%/년" if need_55 else "-",
+              help=f"{scenario} 기준, 투자버킷이 내야 할 명목 CAGR")
 
     if scenario == "반전세 전환":
         st.info(
@@ -272,69 +264,63 @@ def render(df_dashboard=None, df_perf=None, now_kst=None):
         )
 
     # ──────────────────────────────────────────────
-    # 올해 진척 (YTD) — 지금 페이스 점검
+    # 핵심: 목표 필요수익률 vs 내 올해 페이스
     # ──────────────────────────────────────────────
-    st.markdown("### 📅 올해 진척 (YTD) — 지금 잘하고 있나?")
-    pace = need_55 if need_55 else need_50
-    y1, y2, y3, y4 = st.columns(4)
-    y1.metric("연초 순자산 (1/1)", f"{jan1_total:.1f}억")
-    y2.metric("현재 순자산", f"{now_total:.1f}억", delta=f"{now_total - jan1_total:+.1f}억")
-    y3.metric("YTD 성장률", f"{ytd_chg*100:+.1f}%",
-              delta=f"연율 환산 {ytd_ann*100:.0f}%", delta_color="off")
-    y4.metric("목표 필요수익률 (55세)", f"{pace*100:.1f}%/년" if pace else "-",
-              help="이 속도 이상이면 55세 목표 궤도 위")
+    st.markdown("### 🆚 목표 필요수익률 vs 내 올해 페이스 (YTD)")
 
-    # (1) 은퇴 목표 페이스 판정 — 순자산 전체 기준
-    if pace:
-        if ytd_ann >= pace:
-            st.success(
-                f"🟢 올해 순자산 연율 **{ytd_ann*100:.0f}%** ≥ 목표 필요 **{pace*100:.1f}%** "
-                "— 목표 궤도 위에 있습니다."
-            )
-        else:
-            gap_amt = jan1_total * (1 + pace) ** _elapsed - now_total
-            st.warning(
-                f"🟡 올해 순자산 연율 **{ytd_ann*100:.0f}%** < 목표 필요 **{pace*100:.1f}%** "
-                f"— 목표 궤도까지 약 **{gap_amt:.1f}억** 부족."
-            )
+    cpa, cpb, cpc = st.columns(3)
+    cpa.metric("순자산 YTD", f"{ytd_chg*100:+.1f}%", help="전세 포함 전체 자산")
+    cpb.metric("투자버킷 YTD", f"{inv_ytd*100:+.1f}%", help="주식+경매 (경매 일회성 포함)")
+    cpc.metric("주식만 YTD", f"{stock_ytd*100:+.1f}%", help="내가 운용하는 순수 실력")
+
+    # 4개 목표(전세/반전세 × 50/55세) 필요수익률을 올해 경과분으로 환산해 내 투자버킷 YTD 와 비교
+    rows = []
+    for sc_name, resid_v, extra_v, out_v in [
+        ("전세 유지", jeonse, 0.0, 0.0),
+        ("반전세 전환", d["half_deposit"], max(jeonse - d["half_deposit"], 0.0),
+         (rent_y if rent_from_invest else 0.0)),
+    ]:
+        inv0 = invest + auction + extra_v
+        for yrs, age in [(yrs_50, 50), (yrs_55, 55)]:
+            need = need_nominal(total_target, inv0, resid_v, yrs, infl, contrib, out_v)
+            if need is None:
+                continue
+            this_yr_goal = (1 + need) ** _elapsed - 1     # 올해 경과분까지 목표 누적
+            ok = inv_ytd >= this_yr_goal
+            rows.append({
+                "시나리오·은퇴": f"{sc_name} · {age}세",
+                "연 필요수익률": f"{need*100:.1f}%",
+                "올해까지 목표": f"+{this_yr_goal*100:.1f}%",
+                "내 투자 YTD": f"+{inv_ytd*100:.1f}%",
+                "판정": "🟢 초과" if ok else "🔴 미달",
+            })
+
+    import pandas as pd
+    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
     st.caption(
-        "⚠️ 순자산 성장엔 경매 평가차익 등 **일회성**이 섞여 연율이 과장될 수 있음. "
-        "순수 운용 실력은 아래 '주식 TWR' 로 판단하세요."
+        f"⚠️ 투자버킷 YTD **+{inv_ytd*100:.0f}%** 중 경매 차익(연초 {jan1_au:.0f}→{auction:.1f}억)이 대부분 — **일회성**입니다. "
+        f"경매 매도 후엔 이 페이스가 지속되기 어려워요. 지속가능한 **순수 주식 운용은 +{stock_ytd*100:.1f}%** (YTD). "
+        f"'올해까지 목표'는 연 필요수익률을 올해 경과분({_elapsed:.2f}년)만큼만 환산한 값이라 직접 비교됩니다."
     )
 
-    # (2) 운용 실력 — 주식 TWR vs KPI 목표
-    if twr_ann is not None:
-        if twr_ann >= KPI_AVG:
-            tag = f"🟢 평균목표({KPI_AVG:.0f}%) 초과 — 아주 잘하고 있음"
-        elif twr_ann >= KPI_MIN:
-            tag = f"🟡 최소목표({KPI_MIN:.0f}%) 달성 — 평균({KPI_AVG:.0f}%)까진 더"
-        else:
-            tag = f"🔴 최소목표({KPI_MIN:.0f}%) 미달 — 분발 필요"
-        st.markdown(
-            f"**📈 운용 실력 (주식 TWR 연환산): {twr_ann:.1f}%** "
-            f"— KPI {KPI_MIN:.0f}/{KPI_AVG:.0f}/{KPI_MAX:.0f}% 중 {tag}"
-        )
-    else:
-        st.caption("주식 TWR 자동연동 실패 — performance_summary '전체' 행을 확인하세요.")
-
     # ──────────────────────────────────────────────
-    # 자산 궤적 차트
+    # 자산 궤적 차트 (차트 시뮬레이션 수익률 기준)
     # ──────────────────────────────────────────────
-    st.markdown("### 📈 자산 성장 궤적 (오늘 가치)")
+    st.markdown(f"### 📈 자산 성장 궤적 (시뮬레이션 수익률 {exp_ret:.1f}% 가정, 오늘 가치)")
     ages = [kor_age + i for i in range(horizon + 1)]
+    path = project_path(invest0, resid, r_real, horizon, contrib, outflow)
+    reach = reach_age(path, total_target, kor_age)
 
     # 반대 시나리오도 같은 가정으로 그려 비교
     if scenario == "전세 유지":
         alt_resid = d["half_deposit"]
         alt_extra = max(jeonse - d["half_deposit"], 0.0)
-        alt_out = 0.0
         alt_name = "반전세 전환(참고)"
     else:
         alt_resid = jeonse
         alt_extra = 0.0
-        alt_out = 0.0
         alt_name = "전세 유지(참고)"
-    alt_path = project_path(invest + auction + alt_extra, alt_resid, r_real, horizon, contrib, alt_out)
+    alt_path = project_path(invest + auction + alt_extra, alt_resid, r_real, horizon, contrib, 0.0)
 
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=ages, y=path, name=f"{scenario} (선택)",
@@ -353,39 +339,7 @@ def render(df_dashboard=None, df_perf=None, now_kst=None):
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
     )
     st.plotly_chart(fig, use_container_width=True)
-
-    # ──────────────────────────────────────────────
-    # 두 시나리오 × 은퇴시점 비교표
-    # ──────────────────────────────────────────────
-    st.markdown("### 🆚 시나리오 비교 (목표 = 현재 설정)")
-
-    def scen_metrics(resid_v, extra_v, out_v):
-        inv0 = invest + auction + extra_v
-        out = dict()
-        for yrs, age in [(yrs_50, 50), (yrs_55, 55)]:
-            rr = required_cagr(total_target, inv0, resid_v, yrs, contrib, out_v)
-            nom = (1 + rr) * (1 + infl / 100) - 1
-            fv = project_path(inv0, resid_v, r_real, yrs, contrib, out_v)[-1]
-            out[age] = (nom * 100, fv)
-        return out, inv0
-
-    v1, v1_inv = scen_metrics(jeonse, 0.0, 0.0)
-    v2_dep = half_dep if scenario == "반전세 전환" else d["half_deposit"]
-    v2_out = (rent_y if rent_from_invest else 0.0) if scenario == "반전세 전환" else 0.0
-    v2, v2_inv = scen_metrics(v2_dep, max(jeonse - v2_dep, 0.0), v2_out)
-
-    import pandas as pd
-    tbl = pd.DataFrame([
-        {"시나리오": f"전세 유지 (투자 {v1_inv:.1f}억)",
-         "50세 필요수익률": f"{v1[50][0]:.1f}%", "55세 필요수익률": f"{v1[55][0]:.1f}%",
-         f"55세 예상자산(@{exp_ret:.0f}%)": f"{v1[55][1]:.1f}억"},
-        {"시나리오": f"반전세 전환 (투자 {v2_inv:.1f}억)",
-         "50세 필요수익률": f"{v2[50][0]:.1f}%", "55세 필요수익률": f"{v2[55][0]:.1f}%",
-         f"55세 예상자산(@{exp_ret:.0f}%)": f"{v2[55][1]:.1f}억"},
-    ])
-    st.dataframe(tbl, use_container_width=True, hide_index=True)
-    st.caption(
-        f"※ 목표 {total_target:.1f}억 · 물가 {infl:.1f}% · 추가납입 {contrib:.1f}억/년 기준. "
-        "'필요수익률'=그 나이에 목표 도달하는 명목 CAGR, '예상자산'=기대수익률로 굴렸을 때 도달액. "
-        "현재 실적·자산은 대시보드 자동 연동, 그 외는 위 가정값."
-    )
+    if reach:
+        st.caption(f"※ 시뮬레이션 {exp_ret:.1f}% 가정 시 한국나이 **{reach}세**에 목표 도달. (슬라이더를 바꾸면 달라집니다)")
+    else:
+        st.caption(f"※ 시뮬레이션 {exp_ret:.1f}% 가정으론 {ages[-1]}세까지 목표 미도달. 슬라이더를 올려보세요.")
