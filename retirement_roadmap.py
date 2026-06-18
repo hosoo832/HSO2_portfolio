@@ -306,40 +306,4 @@ def render(df_dashboard=None, df_perf=None, now_kst=None):
     # ──────────────────────────────────────────────
     # 자산 궤적 차트 (차트 시뮬레이션 수익률 기준)
     # ──────────────────────────────────────────────
-    st.markdown(f"### 📈 자산 성장 궤적 (시뮬레이션 수익률 {exp_ret:.1f}% 가정, 오늘 가치)")
-    ages = [kor_age + i for i in range(horizon + 1)]
-    path = project_path(invest0, resid, r_real, horizon, contrib, outflow)
-    reach = reach_age(path, total_target, kor_age)
-
-    # 반대 시나리오도 같은 가정으로 그려 비교
-    if scenario == "전세 유지":
-        alt_resid = d["half_deposit"]
-        alt_extra = max(jeonse - d["half_deposit"], 0.0)
-        alt_name = "반전세 전환(참고)"
-    else:
-        alt_resid = jeonse
-        alt_extra = 0.0
-        alt_name = "전세 유지(참고)"
-    alt_path = project_path(invest + auction + alt_extra, alt_resid, r_real, horizon, contrib, 0.0)
-
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(x=ages, y=path, name=f"{scenario} (선택)",
-                             mode="lines+markers", line=dict(width=3, color="#2563eb")))
-    fig.add_trace(go.Scatter(x=ages, y=alt_path, name=alt_name,
-                             mode="lines", line=dict(width=2, dash="dot", color="#9ca3af")))
-    fig.add_hline(y=total_target, line_dash="dash", line_color="#dc2626",
-                  annotation_text=f"목표 {total_target:.0f}억", annotation_position="top left")
-    for mark_age in (50, 55):
-        if ages[0] <= mark_age <= ages[-1]:
-            fig.add_vline(x=mark_age, line_dash="dot", line_color="#f59e0b",
-                          annotation_text=f"{mark_age}세")
-    fig.update_layout(
-        height=420, margin=dict(l=10, r=10, t=30, b=10),
-        xaxis_title="한국나이", yaxis_title="총자산 (억, 오늘가치)",
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-    )
-    st.plotly_chart(fig, use_container_width=True)
-    if reach:
-        st.caption(f"※ 시뮬레이션 {exp_ret:.1f}% 가정 시 한국나이 **{reach}세**에 목표 도달. (슬라이더를 바꾸면 달라집니다)")
-    else:
-        st.caption(f"※ 시뮬레이션 {exp_ret:.1f}% 가정으론 {ages[-1]}세까지 목표 미도달. 슬라이더를 올려보세요.")
+    st.markdown(f"### 📈 자산 성장 궤적 (시뮬레이션 수�
