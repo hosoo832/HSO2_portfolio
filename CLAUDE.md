@@ -163,14 +163,15 @@ PENSION_ACCS = ['220914426167', '717190227129']  # HS 포폴 안의 퇴직연금
 
 ## 🎨 핵심 설계 결정
 
-### 1. Theme 16 그룹 (master_data E열)
-47개 → 16개로 통합. master_data 의 theme 은 다음 중 하나:
+### 1. Theme 17 그룹 (master_data E열)
+47개 → 16개로 통합 → **부동산** 추가로 17개 (2026-06-19). master_data 의 theme 은 다음 중 하나:
 ```
 AI/테크 | 반도체 | 자동차/로봇 | 2차전지 | 전력/인프라 | 화학/소재 |
 K-컬쳐 | 소비재 | 레저 | 금융/밸류업 | 방산/우주 | 조선 |
-바이오 | 헷지 | 패시브 | 크립토 (+ 시스템: 현금)
+바이오 | 부동산 | 헷지 | 패시브 | 크립토 (+ 시스템: 현금)
 ```
 > 자세한 매핑은 `theme_remap.py` 참고.
+> ⚠️ Dashboard 테마 도넛(`make_pie`)은 theme **동적 groupby** — 화이트리스트 없음. 새 테마 추가해도 코드 변경 불필요(빈칸만 '미분류', 나머지는 자동 슬라이스).
 
 ### 2. Pension Class (master_data F열) — 두 가지 측면 동시 사용
 
@@ -585,7 +586,7 @@ main.py 가 시트 열을 **번호로 하드코딩**해서 씀 (W=23 … AD=30).
 ---
 
 > 📝 이 문서는 살아있어. 새 결정 / 기능 추가 / quirks 발견되면 이 파일도 같이 업데이트하면 좋아.
-> 마지막 갱신: **2026-06-09** (니케이·상하이·DAX 하루 밀림 — Naver 월드인덱스 fallback, Quirk #16)
+> 마지막 갱신: **2026-06-19** (Theme 17개 — 부동산 추가; rebalancing_master 계좌번호 오타 → main.py 조용히 행 스킵 함정)
 >
 > ### 갱신 이력
 > - 2026-05-11: 작전 일지 시스템 + Cowork 프로젝트 분리
@@ -597,4 +598,5 @@ main.py 가 시트 열을 **번호로 하드코딩**해서 씀 (W=23 … AD=30).
 > - 2026-05-28: **D 옵션 — 단일 raw_domestic 통합** (설계결정 #12). raw_체결, raw_체결_키움 시트 폐기. 사용자가 raw_domestic 에 Z(체결 Y/N), AA(체결일=WORKDAY 수식) 컬럼 추가. 체결+거래내역 모두 raw_domestic 에 paste, `_apply_chey_dedup` 가 자동 dedup(거래내역 우선, 분할체결은 합산 유지). main.py STEP 1·3·6 단순화. Dashboard 작전일지(직전 영업일 import 포함) raw_domestic 하나만 읽음. `transform_chey`/`flatten_kiwoom_chey`/`absorb_kiwoom_chey` 등 dead code화. 워크플로 B 한 시트로 통합.
 > - 2026-06-05: **ma_touch.py — 이평선 터치 알림**. daily-market.yml 2번째 스텝(`if: always()`). dashboard_data 보유종목(yf_ticker 재활용) → yfinance 일봉 1y (+한국 종목 Naver fchart 폴백) → 일5/일10/주5/주10/월5 계산(주·월봉은 진행 중 캔들 포함) → 직전 거래일 저가~고가에 포함 시 터치 → **별도 스프레드시트 `ma_alerts`** 덮어씀(터치 종목 우선 정렬, 이격% 포함). 06:30 브리핑 스케줄 작업에 "📐 이평선 터치" 섹션 추가 — Drive 커넥터로 ma_alerts 읽음(거래내역 파일은 커서 통째 읽기 불가). 사전 준비: 사용자가 `ma_alerts` 시트 생성 + 서비스계정 편집자 공유.
 > - 2026-06-05 (오전): **ma_alerts `market` 탭 미러** — 6/5 첫 브리핑 A섹션이 WebSearch 기반이라 니케이 등 지표 부정확 사고. fix: update_market_data.py 에 STEP 4 신설 — market_data append 직후 같은 행을 ma_alerts `market` 탭에 세로(지표|값) 형식으로 미러 (`mirror_to_alerts`, 실패해도 cron 계속 진행). 브리핑 스케줄 작업 A섹션 1차 소스를 market 탭으로 변경 — WebSearch 는 fallback only. 이로써 브리핑 A섹션 = Dashboard 섹션 A 와 동일 파이프라인 값.
+> - 2026-06-19: **Theme 17개로** — master_data 에 `부동산` 추가(TIGER리츠부동산인프라 329200 등). Dashboard 테마 도넛은 `make_pie` 동적 groupby라 **코드 변경 0** (화이트리스트 없음, 새 테마 자동 슬라이스). ⚠️ 진단 함정: rebalancing_master 계좌번호 1자리 오타(`220914426168`→`...167`)면 main.py STEP 8.5 의 `else: continue` 로 그 행이 **통째 스킵** → Actual_Ratio·Drift·W~AD 전부 빈칸(조용히 깨짐). 같은 종목 raw_domestic 매수행 계좌번호도 함께 확인.
 > - 2026-06-09: **니케이·상하이·DAX 하루 밀림 fix** (Quirk #16). yfinance 가 이른 아침 cron 에서 해외 EOD 를 한 박자 늦게 줘 마지막 행 셀 NaN → `get_val` 이 그제 값 집음. KOSPI/KOSDAQ 와 달리 해외 인덱스엔 Naver fallback 이 없던 게 원인. `finance_core.get_naver_world_index_previous_close()` 신설(KOSPI 헬퍼 해외판) + 마지막 행 NaN 일 때만 price 주입(chg 는 yfinance 자동, Naver 부호 미신뢰 — Quirk #10), `period` 5d→10d. ⚠️ Naver 월드인덱스 엔드포인트 라이브 검증 PENDING — 로컬 1줄 테스트로 확인 후 신뢰.
