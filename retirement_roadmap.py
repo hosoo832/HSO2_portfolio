@@ -193,10 +193,9 @@ def render(df_dashboard=None, df_perf=None, now_kst=None):
         nn_now = need_nominal(total_target, inv0_now, rv, yrs, infl, contrib, outflow)   # 오늘 기준
         nn_plan = need_nominal(total_target, inv0_jan, rv, yrs, infl, contrib, outflow)  # 연초 기준
         labels.append(nm)
-        # ① 올해까지 목표 = 연초에 세운 페이스(연초 기준)를 올해 경과분만큼 환산
         goal_ytd_list.append(((1 + nn_plan) ** _elapsed - 1) * 100 if nn_plan else 0.0)
-        cur_need_list.append(nn_now * 100 if nn_now else 0.0)    # 오늘 기준 (메인)
-        plan_need_list.append(nn_plan * 100 if nn_plan else 0.0)  # 연초 기준 (비교)
+        cur_need_list.append(nn_now * 100 if nn_now else 0.0)
+        plan_need_list.append(nn_plan * 100 if nn_plan else 0.0)
 
     # ── 결과 요약 ──
     st.markdown("### 📊 결과 요약")
